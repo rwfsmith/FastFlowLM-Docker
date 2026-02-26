@@ -1,0 +1,104 @@
+# =============================================================================
+# FastFlowLM-Docker: Docker Compose Configuration
+# Runs FastFlowLM + Wyoming Protocol servers with AMD NPU passthrough
+# =============================================================================
+
+services:
+  # ── Combined ASR + LLM service (default) ────────────────────────────────
+  fastflowlm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastflowlm-docker
+    restart: unless-stopped
+    command: ["both"]
+    ports:
+      - "${WYOMING_ASR_PORT:-10300}:10300"    # Wyoming ASR (Whisper)
+      - "${WYOMING_LLM_PORT:-10400}:10400"    # Wyoming LLM (Conversation)
+    environment:
+      - FLM_ASR_ENABLED=${FLM_ASR_ENABLED:-true}
+      - FLM_LLM_ENABLED=${FLM_LLM_ENABLED:-true}
+      - FLM_LLM_MODEL=${FLM_LLM_MODEL:-llama3.2:1b}
+      - FLM_ASR_MODEL=${FLM_ASR_MODEL:-whisper-v3:turbo}
+      - FLM_SERVER_PORT=${FLM_SERVER_PORT:-52625}
+      - FLM_ASR_LANGUAGE=${FLM_ASR_LANGUAGE:-en}
+      - FLM_LLM_SYSTEM_PROMPT=${FLM_LLM_SYSTEM_PROMPT:-You are a helpful voice assistant for a smart home. Keep responses concise and conversational.}
+      - FLM_MODEL_PATH=/data/models
+      - FLM_LOG_LEVEL=${FLM_LOG_LEVEL:-INFO}
+    volumes:
+      - flm-models:/data/models
+    # AMD NPU device passthrough — requires XDNA driver on host
+    devices:
+      - /dev/accel:/dev/accel       # AMD NPU accelerator devices
+      - /dev/dri:/dev/dri           # Direct Rendering Infrastructure
+    group_add:
+      - video
+      - render
+    profiles:
+      - default
+      - all
+
+  # ── ASR-only service ────────────────────────────────────────────────────
+  fastflowlm-asr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastflowlm-asr
+    restart: unless-stopped
+    command: ["asr"]
+    ports:
+      - "${WYOMING_ASR_PORT:-10300}:10300"
+    environment:
+      - FLM_ASR_ENABLED=true
+      - FLM_LLM_ENABLED=false
+      - FLM_ASR_MODEL=${FLM_ASR_MODEL:-whisper-v3:turbo}
+      - FLM_SERVER_PORT=${FLM_SERVER_PORT:-52625}
+      - FLM_ASR_LANGUAGE=${FLM_ASR_LANGUAGE:-en}
+      - FLM_MODEL_PATH=/data/models
+      - FLM_LOG_LEVEL=${FLM_LOG_LEVEL:-INFO}
+    volumes:
+      - flm-models:/data/models
+    devices:
+      - /dev/accel:/dev/accel
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    profiles:
+      - asr
+      - all
+
+  # ── LLM-only service ────────────────────────────────────────────────────
+  fastflowlm-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastflowlm-llm
+    restart: unless-stopped
+    command: ["llm"]
+    ports:
+      - "${WYOMING_LLM_PORT:-10400}:10400"
+    environment:
+      - FLM_ASR_ENABLED=false
+      - FLM_LLM_ENABLED=true
+      - FLM_LLM_MODEL=${FLM_LLM_MODEL:-llama3.2:1b}
+      - FLM_SERVER_PORT=${FLM_SERVER_PORT:-52625}
+      - FLM_LLM_SYSTEM_PROMPT=${FLM_LLM_SYSTEM_PROMPT:-You are a helpful voice assistant for a smart home. Keep responses concise and conversational.}
+      - FLM_MODEL_PATH=/data/models
+      - FLM_LOG_LEVEL=${FLM_LOG_LEVEL:-INFO}
+    volumes:
+      - flm-models:/data/models
+    devices:
+      - /dev/accel:/dev/accel
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    profiles:
+      - llm
+      - all
+
+# Named volume for persistent model storage
+volumes:
+  flm-models:
+    driver: local
