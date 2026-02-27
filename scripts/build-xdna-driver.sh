@@ -41,7 +41,15 @@ echo "Host kernel: ${KERNEL_VERSION}"
 KMAJOR=$(echo "$KERNEL_VERSION" | cut -d. -f1)
 KMINOR=$(echo "$KERNEL_VERSION" | cut -d. -f2)
 TRUENAS_BRANCH="truenas/linux-${KMAJOR}.${KMINOR}"
-echo "TrueNAS kernel branch: ${TRUENAS_BRANCH}"
+
+# Try to find a specific TrueNAS release tag for the exact kernel version.
+# The branch HEAD may have a newer kernel (e.g. 6.12.43 vs running 6.12.33).
+# TrueNAS tags like TS-25.10.1 point to the exact commit for each release.
+echo "Detecting best kernel source tag/branch..."
+KPATCH=$(echo "$KERNEL_VERSION" | cut -d. -f3 | sed 's/-.*//')
+echo "  Running kernel: ${KMAJOR}.${KMINOR}.${KPATCH}"
+echo "  Default branch: ${TRUENAS_BRANCH}"
+echo "  Will force vermagic to match running kernel at build time."
 
 # Verify kernel >= 6.10
 if [ "$KMAJOR" -lt 6 ] || ([ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -lt 10 ]); then

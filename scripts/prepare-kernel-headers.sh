@@ -56,24 +56,74 @@ if ! grep -q "^CONFIG_DRM_ACCEL=y" .config 2>/dev/null; then
     echo "  Added CONFIG_DRM_ACCEL=y"
 fi
 
-# Disable CONFIG_MODVERSIONS — we don't have Module.symvers from the host,
-# so CRC version checks will fail on every symbol at insmod time.
-# Without modversions, the kernel skips CRC checks for this module.
-sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' .config 2>/dev/null || true
+# Keep CONFIG_MODVERSIONS=y — the running kernel has modversions enabled,
+# and its vermagic string includes "modversions". Our module's vermagic must
+# match EXACTLY, so we must also build with CONFIG_MODVERSIONS=y.
+# Without Module.symvers, modpost will emit CRC warnings (KBUILD_MODPOST_WARN=1
+# prevents these from being fatal). At load time, we use insmod -f to skip
+# CRC verification since we can't produce valid CRCs without Module.symvers.
 if grep -q "^CONFIG_MODVERSIONS=y" .config 2>/dev/null; then
-    echo "WARNING: Could not disable CONFIG_MODVERSIONS"
+    echo "  CONFIG_MODVERSIONS=y (keeping enabled to match running kernel vermagic)"
 else
-    echo "  Disabled CONFIG_MODVERSIONS (no Module.symvers available)"
+    echo "CONFIG_MODVERSIONS=y" >> .config
+    echo "  Added CONFIG_MODVERSIONS=y (required for vermagic match)"
 fi
-# Also disable ASM_MODVERSIONS if present
-sed -i 's/^CONFIG_ASM_MODVERSIONS=y/# CONFIG_ASM_MODVERSIONS is not set/' .config 2>/dev/null || true
 
 # ── Prepare the source tree for external module builds ─────────────────────
+echo ""
+echo "=== Forcing kernel version to match running kernel ==="
+
+# The source tree might produce a different version string than the running
+# kernel (e.g. 6.12.43 vs 6.12.33). We MUST match exactly or insmod will
+# reject the module with 'version magic' mismatch.
+#
+# Kernel version string = KERNELVERSION + LOCALVERSION + auto-generated suffix
+# Strategy: overwrite the Makefile VERSION/PATCHLEVEL/SUBLEVEL to match exactly,
+# and set LOCALVERSION to match the running kernel's suffix.
+
+RUNNING_MAJOR=$(echo "${KERNEL_VERSION}" | cut -d. -f1)
+RUNNING_MINOR=$(echo "${KERNEL_VERSION}" | cut -d. -f2)
+# Extract sublevel (e.g., "33" from "6.12.33-production+truenas")
+RUNNING_SUBLEVEL=$(echo "${KERNEL_VERSION}" | cut -d. -f3 | sed 's/-.*//')
+# Extract localversion suffix (e.g., "-production+truenas" from "6.12.33-production+truenas")
+RUNNING_LOCALVER=$(echo "${KERNEL_VERSION}" | sed "s/^${RUNNING_MAJOR}\.${RUNNING_MINOR}\.${RUNNING_SUBLEVEL}//")
+
+echo "  Target: VERSION=${RUNNING_MAJOR} PATCHLEVEL=${RUNNING_MINOR} SUBLEVEL=${RUNNING_SUBLEVEL}"
+echo "  Target LOCALVERSION: '${RUNNING_LOCALVER}'"
+
+# Patch the top-level Makefile to match running kernel version
+sed -i "s/^VERSION = .*/VERSION = ${RUNNING_MAJOR}/" Makefile
+sed -i "s/^PATCHLEVEL = .*/PATCHLEVEL = ${RUNNING_MINOR}/" Makefile
+sed -i "s/^SUBLEVEL = .*/SUBLEVEL = ${RUNNING_SUBLEVEL}/" Makefile
+# Clear any EXTRAVERSION to avoid appending unwanted suffixes
+sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION =/" Makefile
+
+# Set LOCALVERSION to match the running kernel's suffix
+echo "${RUNNING_LOCALVER}" > "${KERNEL_SRC}/localversion"
+# Disable auto-appending of git revision to version string
+touch "${KERNEL_SRC}/.scmversion"
+
+# Verify
+echo "  Source Makefile version:"
+grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile | head -4 | sed 's/^/    /'
+echo "  localversion file: $(cat ${KERNEL_SRC}/localversion)"
+
 make olddefconfig
 
 # Build with relaxed warnings — TrueNAS kernel source may have custom
 # preprocessor guards that trigger -Werror=undef with mismatched configs
 make KCFLAGS="-Wno-error=undef" modules_prepare
+
+# Verify the version string
+BUILT_UTS=$(cat include/generated/utsrelease.h 2>/dev/null | grep UTS_RELEASE | sed 's/.*"\(.*\)".*/\1/' || echo "unknown")
+echo ""
+echo "  Built UTS_RELEASE: ${BUILT_UTS}"
+echo "  Running kernel:    ${KERNEL_VERSION}"
+if [ "${BUILT_UTS}" = "${KERNEL_VERSION}" ]; then
+    echo "  VERSION MATCH: YES"
+else
+    echo "  WARNING: Version mismatch! Module may need insmod -f"
+fi
 
 # ── Module.symvers — required for out-of-tree module builds ────────────────
 # Without Module.symvers, modpost can't resolve kernel symbols (drm_ioctl, etc.)

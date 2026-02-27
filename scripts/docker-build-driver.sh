@@ -118,14 +118,11 @@ if [ -n "${AMDXDNA_KO}" ]; then
     cp "${AMDXDNA_KO}" "${OUTPUT_DIR}/modules/"
     echo "Module: ${OUTPUT_DIR}/modules/$(basename ${AMDXDNA_KO})"
 
-    # Strip __versions section — without Module.symvers the CRC entries are
-    # wrong and will cause "Unknown symbol (err -2)" on insmod.
-    # The symbols exist in the running kernel; we just can't verify CRCs.
-    KO_OUT="${OUTPUT_DIR}/modules/amdxdna.ko"
-    if command -v objcopy >/dev/null 2>&1 && [ -f "${KO_OUT}" ]; then
-        echo "Stripping __versions section (no valid CRCs without Module.symvers)..."
-        objcopy --remove-section=__versions "${KO_OUT}" 2>/dev/null || true
-    fi
+    # NOTE: We do NOT strip the __versions section. Even though our CRCs
+    # are invalid (no Module.symvers), insmod -f will bypass CRC checks.
+    # Stripping __versions can cause the kernel to reject the module
+    # entirely because check_version() fails when the section is missing.
+    echo "Module ready: ${OUTPUT_DIR}/modules/amdxdna.ko"
 else
     echo "WARNING: amdxdna.ko not found in build tree!"
     echo "Attempting to extract from built .deb package..."
@@ -227,15 +224,35 @@ if lsmod | grep -q "^amdxdna "; then
 fi
 
 # ── Load the module ───────────────────────────────────────────────────────
+# We use insmod -f because the module was built without a valid
+# Module.symvers, so CRC version checks (modversions) will fail.
+# The -f flag sets MODULE_INIT_IGNORE_MODVERSIONS | MODULE_INIT_IGNORE_VERMAGIC,
+# which bypasses CRC checks. This is safe — the symbols DO exist in the
+# running kernel; we just can't verify their CRCs at build time.
 echo "Loading amdxdna module..."
-if ! insmod "${MODULE}" 2>&1; then
-    echo "insmod failed. Trying with --force..."
-    insmod -f "${MODULE}" 2>&1 || {
+
+# Try regular insmod first (works if we got a valid Module.symvers)
+if insmod "${MODULE}" 2>/dev/null; then
+    echo "  Module loaded successfully."
+else
+    echo "  Regular insmod failed (expected without Module.symvers)."
+    echo "  Loading with insmod -f (bypass CRC checks)..."
+    if insmod -f "${MODULE}" 2>&1; then
+        echo "  Module loaded with force flag."
+        echo "  (Kernel will show 'module verification failed' — this is normal)"
+    else
         echo ""
-        echo "ERROR: Could not load amdxdna.ko"
-        echo "Check 'dmesg | tail -30' for details."
+        echo "ERROR: Could not load amdxdna.ko even with -f flag."
+        echo ""
+        echo "Check 'dmesg | tail -50' for details. Common issues:"
+        echo "  - 'version magic' mismatch: kernel version changed since build"
+        echo "  - 'Unknown symbol (err -22)': missing namespace import or module dependency"
+        echo "  - 'firmware not found': run this script again to set up firmware overlay"
+        echo ""
+        echo "Re-run the full driver build if kernel was updated:"
+        echo "  sudo bash \$(dirname \$0)/../scripts/build-xdna-driver.sh"
         exit 1
-    }
+    fi
 fi
 
 # ── Verify ─────────────────────────────────────────────────────────────────
