@@ -135,6 +135,7 @@ fi
 
 docker run --rm \
     ${CONFIG_MOUNT} \
+    -v /lib/modules:/host-modules:ro \
     -v "${OUTPUT_DIR}:/output" \
     -e "KERNEL_VERSION=${KERNEL_VERSION}" \
     xdna-driver-builder
