@@ -117,6 +117,15 @@ AMDXDNA_KO=$(find /build/xdna-driver -name "amdxdna.ko" -o -name "amdxdna.ko.xz"
 if [ -n "${AMDXDNA_KO}" ]; then
     cp "${AMDXDNA_KO}" "${OUTPUT_DIR}/modules/"
     echo "Module: ${OUTPUT_DIR}/modules/$(basename ${AMDXDNA_KO})"
+
+    # Strip __versions section — without Module.symvers the CRC entries are
+    # wrong and will cause "Unknown symbol (err -2)" on insmod.
+    # The symbols exist in the running kernel; we just can't verify CRCs.
+    KO_OUT="${OUTPUT_DIR}/modules/amdxdna.ko"
+    if command -v objcopy >/dev/null 2>&1 && [ -f "${KO_OUT}" ]; then
+        echo "Stripping __versions section (no valid CRCs without Module.symvers)..."
+        objcopy --remove-section=__versions "${KO_OUT}" 2>/dev/null || true
+    fi
 else
     echo "WARNING: amdxdna.ko not found in build tree!"
     echo "Attempting to extract from built .deb package..."

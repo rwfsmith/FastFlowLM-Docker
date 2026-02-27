@@ -56,6 +56,18 @@ if ! grep -q "^CONFIG_DRM_ACCEL=y" .config 2>/dev/null; then
     echo "  Added CONFIG_DRM_ACCEL=y"
 fi
 
+# Disable CONFIG_MODVERSIONS — we don't have Module.symvers from the host,
+# so CRC version checks will fail on every symbol at insmod time.
+# Without modversions, the kernel skips CRC checks for this module.
+sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' .config 2>/dev/null || true
+if grep -q "^CONFIG_MODVERSIONS=y" .config 2>/dev/null; then
+    echo "WARNING: Could not disable CONFIG_MODVERSIONS"
+else
+    echo "  Disabled CONFIG_MODVERSIONS (no Module.symvers available)"
+fi
+# Also disable ASM_MODVERSIONS if present
+sed -i 's/^CONFIG_ASM_MODVERSIONS=y/# CONFIG_ASM_MODVERSIONS is not set/' .config 2>/dev/null || true
+
 # ── Prepare the source tree for external module builds ─────────────────────
 make olddefconfig
 
