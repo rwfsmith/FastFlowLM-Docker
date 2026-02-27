@@ -41,6 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         protobuf-compiler \
         libprotobuf-dev \
         ocl-icd-opencl-dev \
+        ocl-icd-libopencl1 \
+        opencl-headers \
         bc \
         bison \
         flex \
