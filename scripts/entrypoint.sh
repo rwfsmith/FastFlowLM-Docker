@@ -53,10 +53,36 @@ if [ -d "/dev/accel" ] && ls /dev/accel/accel* >/dev/null 2>&1; then
     echo "NPU device(s) found:"
     ls -la /dev/accel/accel*
 else
-    echo "WARNING: No NPU devices found at /dev/accel/"
-    echo "  Make sure the AMD XDNA driver is installed on the host"
-    echo "  and the container has --device /dev/accel passthrough."
-    echo "  FastFlowLM will not be able to use NPU acceleration!"
+    echo "============================================="
+    echo " WARNING: No NPU devices found at /dev/accel/"
+    echo "============================================="
+    echo ""
+    echo "  The AMD XDNA driver (amdxdna.ko) must be loaded on the HOST."
+    echo ""
+    echo "  On TrueNAS Scale (apt is disabled), build the driver via Docker:"
+    echo "    cd FastFlowLM-Docker"
+    echo "    sudo bash scripts/build-xdna-driver.sh"
+    echo "    sudo bash xdna-driver-output/load-driver.sh"
+    echo ""
+    echo "  Then verify:"
+    echo "    ls /dev/accel/       # should show accel0"
+    echo ""
+    echo "  See: https://github.com/rwfsmith/FastFlowLM-Docker#truenas-scale-npu-driver-setup"
+    echo ""
+    echo "  Also ensure the container has device passthrough:"
+    echo "    devices:"
+    echo "      - /dev/accel:/dev/accel"
+    echo "      - /dev/dri:/dev/dri"
+    echo ""
+    echo "  FastFlowLM will NOT be able to use NPU acceleration!"
+    echo "  Continuing anyway — FLM may fall back to CPU mode."
+    echo "============================================="
+fi
+
+# Check /dev/dri access (used for display/render)
+if [ -d "/dev/dri" ]; then
+    echo "DRI devices:"
+    ls -la /dev/dri/
 fi
 
 # ── Start FastFlowLM server in background ──────────────────────────────────

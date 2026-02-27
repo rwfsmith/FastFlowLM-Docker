@@ -1,0 +1,85 @@
+# =============================================================================
+# Dockerfile.driver — Build AMD XDNA kernel module inside Docker
+#
+# TrueNAS Scale disables apt, so we build the driver in a container
+# and extract the .ko module + firmware to load on the host via insmod.
+#
+# Usage (via scripts/build-xdna-driver.sh):
+#   docker build -f Dockerfile.driver \
+#     --build-arg KERNEL_VERSION=$(uname -r) \
+#     --build-arg TRUENAS_KERNEL_TAG=truenas/linux-6.12 \
+#     -t xdna-driver-builder .
+#   docker run --rm -v /path/to/output:/output xdna-driver-builder
+# =============================================================================
+
+FROM debian:bookworm AS builder
+
+ARG KERNEL_VERSION
+ARG TRUENAS_KERNEL_TAG=truenas/linux-6.12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── Install all build dependencies ──────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        cmake \
+        libelf-dev \
+        libdrm-dev \
+        pkg-config \
+        python3 \
+        pciutils \
+        dkms \
+        libudev-dev \
+        libboost-dev \
+        libboost-filesystem-dev \
+        libboost-program-options-dev \
+        libssl-dev \
+        rapidjson-dev \
+        uuid-dev \
+        curl \
+        protobuf-compiler \
+        libprotobuf-dev \
+        ocl-icd-opencl-dev \
+        bc \
+        bison \
+        flex \
+        cpio \
+        kmod \
+        rsync \
+        libncurses-dev \
+        wget \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# ── Step 1: Build kernel headers from TrueNAS kernel source ────────────────
+# TrueNAS uses a custom kernel; we need matching headers to compile modules.
+RUN echo "=== Cloning TrueNAS kernel source (branch: ${TRUENAS_KERNEL_TAG}) ===" \
+    && git clone --depth 1 --branch "${TRUENAS_KERNEL_TAG}" \
+       https://github.com/truenas/linux.git /build/linux-src
+
+WORKDIR /build/linux-src
+
+# Prepare kernel build environment to match the running TrueNAS kernel.
+# We copy the running kernel's config (passed in at runtime via /host-config)
+# but also provide a fallback defconfig.
+COPY scripts/prepare-kernel-headers.sh /build/prepare-kernel-headers.sh
+RUN chmod +x /build/prepare-kernel-headers.sh
+
+# ── Step 2: Clone XDNA driver ──────────────────────────────────────────────
+WORKDIR /build
+RUN echo "=== Cloning AMD XDNA driver ===" \
+    && git clone --recursive https://github.com/amd/xdna-driver.git /build/xdna-driver
+
+# ── Step 3: Build script that runs at container startup ────────────────────
+# The actual build happens at `docker run` time because we need:
+#   - The host's /proc/config.gz or /boot/config-* mounted in
+#   - An output volume to write the .ko and firmware to
+COPY scripts/docker-build-driver.sh /build/docker-build-driver.sh
+RUN chmod +x /build/docker-build-driver.sh
+
+ENV KERNEL_VERSION=${KERNEL_VERSION}
+
+ENTRYPOINT ["/build/docker-build-driver.sh"]

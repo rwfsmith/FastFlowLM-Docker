@@ -27,13 +27,18 @@ services:
       - FLM_LOG_LEVEL=${FLM_LOG_LEVEL:-INFO}
     volumes:
       - flm-models:/data/models
-    # AMD NPU device passthrough — requires XDNA driver on host
+    # AMD NPU device passthrough — requires XDNA driver (amdxdna.ko) on host
+    # After loading the driver: ls /dev/accel/ should show accel0
     devices:
-      - /dev/accel:/dev/accel       # AMD NPU accelerator devices
+      - /dev/accel:/dev/accel       # AMD NPU accelerator devices (amdxdna)
       - /dev/dri:/dev/dri           # Direct Rendering Infrastructure
+    # Ensure container user has access to device groups
     group_add:
       - video
       - render
+    # On TrueNAS Scale, also grant privileged device access
+    security_opt:
+      - seccomp:unconfined
     profiles:
       - default
       - all
@@ -64,6 +69,8 @@ services:
     group_add:
       - video
       - render
+    security_opt:
+      - seccomp:unconfined
     profiles:
       - asr
       - all
@@ -94,6 +101,8 @@ services:
     group_add:
       - video
       - render
+    security_opt:
+      - seccomp:unconfined
     profiles:
       - llm
       - all
