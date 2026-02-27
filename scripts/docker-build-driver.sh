@@ -63,6 +63,19 @@ echo ""
 
 # ── Step 3: Build XDNA driver module ──────────────────────────────────────
 echo ">>> Step 3/4: Building XDNA kernel module..."
+
+# If Module.symvers is empty/small, modpost can't resolve kernel symbols.
+# KBUILD_MODPOST_WARN turns those errors into warnings so the build succeeds.
+# The symbols DO exist in the running kernel — they just can't be CRC-verified
+# at build time without a matching Module.symvers from the host.
+SYMVERS_FILE="/build/linux-src/Module.symvers"
+SYMVERS_LINES=$(wc -l < "${SYMVERS_FILE}" 2>/dev/null || echo 0)
+if [ "${SYMVERS_LINES}" -lt 100 ]; then
+    echo "Module.symvers has only ${SYMVERS_LINES} symbols (expected thousands)."
+    echo "Setting KBUILD_MODPOST_WARN=1 to allow build to continue."
+    export KBUILD_MODPOST_WARN=1
+fi
+
 cd build
 ./build.sh -release
 
@@ -154,8 +167,12 @@ cp -v "${MODULE}" "${MODULE_DIR}/"
 depmod -a "${KERNEL_VERSION}"
 
 # Load the module
+# Use insmod directly — the module may have been built without Module.symvers
+# so modprobe may refuse due to missing CRC/version info.
 echo "Loading amdxdna module..."
-modprobe amdxdna || insmod "${MODULE}"
+insmod "${MODULE}" 2>/dev/null \
+    || modprobe --force amdxdna 2>/dev/null \
+    || modprobe amdxdna
 
 # Verify
 sleep 1

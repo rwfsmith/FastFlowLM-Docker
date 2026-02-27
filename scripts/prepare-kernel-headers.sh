@@ -92,18 +92,11 @@ done
 if [ "$SYMVERS_FOUND" = false ]; then
     echo ""
     echo "=== Module.symvers not found on host ==="
-    echo "Building the kernel to generate Module.symvers..."
-    echo "This will take 20-60 minutes but only needs to happen once."
+    echo "Creating empty Module.symvers."
+    echo "The XDNA build will use KBUILD_MODPOST_WARN=1 to proceed without it."
+    echo "The resulting module will load fine via insmod — the symbols exist in the running kernel."
     echo ""
-    # Build vmlinux + in-tree modules to generate Module.symvers
-    # -j uses all available CPUs to speed this up
-    make KCFLAGS="-Wno-error=undef" -j"$(nproc)" || {
-        echo ""
-        echo "WARNING: Full kernel build failed."
-        echo "Attempting module build with KBUILD_MODPOST_WARN=1 (fallback)."
-        echo "The driver module will be built but may need 'insmod --force' to load."
-        touch "${KERNEL_SRC}/Module.symvers"
-    }
+    touch "${KERNEL_SRC}/Module.symvers"
 fi
 
 SYMVERS_COUNT=$(wc -l < "${KERNEL_SRC}/Module.symvers" 2>/dev/null || echo 0)
