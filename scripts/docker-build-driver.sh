@@ -64,6 +64,17 @@ echo ""
 # ── Step 3: Build XDNA driver module ──────────────────────────────────────
 echo ">>> Step 3/4: Building XDNA kernel module..."
 
+# Remove the drivers/accel/ path — it's the upstream in-kernel-tree version
+# that uses #include <trace/events/amdxdna.h> (a header only present when
+# compiled inside the kernel source tree). It CANNOT build out-of-tree.
+# The src/driver/ path is the out-of-tree version and builds correctly.
+if [ -d /build/xdna-driver/drivers/accel ]; then
+    echo "Removing drivers/accel/ (in-tree only, cannot build out-of-tree)..."
+    rm -rf /build/xdna-driver/drivers/accel
+    # Also remove its CMakeLists reference if present
+    sed -i '/add_subdirectory.*accel/d' /build/xdna-driver/drivers/CMakeLists.txt 2>/dev/null || true
+fi
+
 # If Module.symvers is empty/small, modpost can't resolve kernel symbols.
 # KBUILD_MODPOST_WARN turns those errors into warnings so the build succeeds.
 # The symbols DO exist in the running kernel — they just can't be CRC-verified
@@ -77,7 +88,18 @@ if [ "${SYMVERS_LINES}" -lt 100 ]; then
 fi
 
 cd build
-./build.sh -release
+./build.sh -release || {
+    echo ""
+    echo "NOTE: build.sh returned non-zero. Checking if amdxdna.ko was built..."
+}
+
+# Verify the out-of-tree driver module was built
+AMDXDNA_KO_CHECK=$(find /build/xdna-driver -path '*/src/driver/*' -name 'amdxdna.ko' 2>/dev/null | head -1)
+if [ -z "${AMDXDNA_KO_CHECK}" ]; then
+    echo "ERROR: amdxdna.ko was not produced by the build!"
+    exit 1
+fi
+echo "Found driver module: ${AMDXDNA_KO_CHECK}"
 
 # Copy the plugin .deb to output
 cp ./Release/xrt_plugin.*-amdxdna.deb "${OUTPUT_DIR}/" 2>/dev/null || true
