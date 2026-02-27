@@ -152,6 +152,10 @@ cat > "${OUTPUT_DIR}/load-driver.sh" << 'LOADER_EOF'
 #
 # Run this ON THE TRUENAS HOST after the Docker build completes:
 #   sudo bash /path/to/output/load-driver.sh
+#
+# TrueNAS has a read-only root filesystem, so we:
+#   - Load the .ko directly with insmod (no copy to /lib/modules)
+#   - Use a tmpfs overlay for firmware if /usr/lib/firmware is read-only
 # =============================================================================
 set -euo pipefail
 
@@ -160,14 +164,31 @@ KERNEL_VERSION="$(uname -r)"
 
 echo "Loading AMD XDNA driver for kernel ${KERNEL_VERSION}..."
 
-# Copy firmware
+# ── Install firmware (handle read-only filesystem) ─────────────────────────
 if [ -d "${SCRIPT_DIR}/firmware" ] && [ "$(ls -A ${SCRIPT_DIR}/firmware 2>/dev/null)" ]; then
     echo "Installing NPU firmware..."
-    mkdir -p /usr/lib/firmware/amdnpu
-    cp -v "${SCRIPT_DIR}/firmware/"* /usr/lib/firmware/amdnpu/
+    # Try direct copy first
+    if mkdir -p /usr/lib/firmware/amdnpu 2>/dev/null && \
+       cp "${SCRIPT_DIR}/firmware/"* /usr/lib/firmware/amdnpu/ 2>/dev/null; then
+        echo "  Firmware installed to /usr/lib/firmware/amdnpu/"
+    else
+        echo "  Root filesystem is read-only. Using tmpfs overlay for firmware..."
+        # Create a writable overlay on top of /usr/lib/firmware
+        if ! mount | grep -q "tmpfs on /usr/lib/firmware"; then
+            # Preserve existing firmware with a bind mount trick
+            TMPFW=$(mktemp -d)
+            cp -a /usr/lib/firmware/* "${TMPFW}/" 2>/dev/null || true
+            mount -t tmpfs tmpfs /usr/lib/firmware
+            cp -a "${TMPFW}/"* /usr/lib/firmware/ 2>/dev/null || true
+            rm -rf "${TMPFW}"
+        fi
+        mkdir -p /usr/lib/firmware/amdnpu
+        cp -v "${SCRIPT_DIR}/firmware/"* /usr/lib/firmware/amdnpu/
+        echo "  Firmware installed via tmpfs overlay (non-persistent across reboots)."
+    fi
 fi
 
-# Copy kernel module
+# ── Find the kernel module ─────────────────────────────────────────────────
 KO_FILE="${SCRIPT_DIR}/modules/amdxdna.ko"
 KO_XZ_FILE="${SCRIPT_DIR}/modules/amdxdna.ko.xz"
 
@@ -180,23 +201,35 @@ else
     exit 1
 fi
 
-# Install module into the kernel module tree
+# ── Optionally install to /lib/modules (skip if read-only) ─────────────────
 MODULE_DIR="/lib/modules/${KERNEL_VERSION}/extra"
-mkdir -p "${MODULE_DIR}"
-cp -v "${MODULE}" "${MODULE_DIR}/"
+if mkdir -p "${MODULE_DIR}" 2>/dev/null && \
+   cp "${MODULE}" "${MODULE_DIR}/" 2>/dev/null; then
+    depmod -a "${KERNEL_VERSION}" 2>/dev/null || true
+    echo "Module installed to ${MODULE_DIR}/"
+else
+    echo "Root filesystem is read-only — loading directly with insmod."
+fi
 
-# Rebuild module dependency list
-depmod -a "${KERNEL_VERSION}"
+# ── Unload old module if present ───────────────────────────────────────────
+if lsmod | grep -q "^amdxdna "; then
+    echo "Unloading existing amdxdna module..."
+    rmmod amdxdna 2>/dev/null || true
+fi
 
-# Load the module
-# Use insmod directly — the module may have been built without Module.symvers
-# so modprobe may refuse due to missing CRC/version info.
+# ── Load the module ───────────────────────────────────────────────────────
 echo "Loading amdxdna module..."
-insmod "${MODULE}" 2>/dev/null \
-    || modprobe --force amdxdna 2>/dev/null \
-    || modprobe amdxdna
+if ! insmod "${MODULE}" 2>&1; then
+    echo "insmod failed. Trying with --force..."
+    insmod -f "${MODULE}" 2>&1 || {
+        echo ""
+        echo "ERROR: Could not load amdxdna.ko"
+        echo "Check 'dmesg | tail -30' for details."
+        exit 1
+    }
+fi
 
-# Verify
+# ── Verify ─────────────────────────────────────────────────────────────────
 sleep 1
 if [ -d "/dev/accel" ] && ls /dev/accel/accel* >/dev/null 2>&1; then
     echo ""
@@ -211,19 +244,25 @@ if [ -d "/dev/accel" ] && ls /dev/accel/accel* >/dev/null 2>&1; then
 else
     echo ""
     echo "WARNING: Module loaded but /dev/accel/ not found."
-    echo "Check 'dmesg | tail -20' for errors."
+    echo "Check 'dmesg | tail -30' for errors."
+    echo ""
+    echo "If you see 'firmware not found' errors, re-run this script —"
+    echo "the firmware overlay may need to be set up before loading."
 fi
 
-# Set memory limits
-mkdir -p /etc/security/limits.d
-tee /etc/security/limits.d/99-amdxdna.conf > /dev/null << 'EOF'
+# ── Set memory limits (skip if read-only) ──────────────────────────────────
+if mkdir -p /etc/security/limits.d 2>/dev/null; then
+    tee /etc/security/limits.d/99-amdxdna.conf > /dev/null << 'EOF'
 * soft memlock unlimited
 * hard memlock unlimited
 EOF
+fi
 
 echo ""
-echo "Done. To auto-load on boot, run:"
-echo "  echo 'amdxdna' | sudo tee /etc/modules-load.d/amdxdna.conf"
+echo "Done."
+echo ""
+echo "NOTE: On TrueNAS, you must re-run this script after every reboot:"
+echo "  sudo bash ${SCRIPT_DIR}/load-driver.sh"
 LOADER_EOF
 
 chmod +x "${OUTPUT_DIR}/load-driver.sh"
