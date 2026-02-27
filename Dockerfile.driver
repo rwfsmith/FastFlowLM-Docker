@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libprotobuf-dev \
         ocl-icd-opencl-dev \
         ocl-icd-libopencl1 \
+        ocl-icd-dev \
         opencl-headers \
         bc \
         bison \
