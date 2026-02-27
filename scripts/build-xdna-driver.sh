@@ -108,9 +108,11 @@ echo ""
 
 # ── Build the Docker image ────────────────────────────────────────────────
 echo ">>> Building Docker image (this downloads ~2GB and takes 10-30 min)..."
+echo "    Use --no-cache to force a clean rebuild if packages changed."
 echo ""
 
 docker build \
+    --no-cache \
     -f "${PROJECT_DIR}/Dockerfile.driver" \
     --build-arg "KERNEL_VERSION=${KERNEL_VERSION}" \
     --build-arg "TRUENAS_KERNEL_TAG=${TRUENAS_BRANCH}" \
