@@ -23,10 +23,13 @@ echo ""
 # ── Step 1: Prepare kernel headers ─────────────────────────────────────────
 echo ">>> Step 1/4: Preparing kernel headers..."
 
-# Copy /host-proc/config.gz if available
-if [ -f /host-proc/config.gz ]; then
-    mkdir -p /host-config
-    cp /host-proc/config.gz /host-config/config.gz
+# The kernel config should be mounted at /host-config/kernel.config
+# (extracted by build-xdna-driver.sh on the host before docker run)
+if [ -f /host-config/kernel.config ]; then
+    echo "Host kernel config found at /host-config/kernel.config"
+else
+    echo "WARNING: No host kernel config mounted."
+    echo "  The build will fall back to defconfig + CONFIG_TRUENAS=y."
 fi
 
 export KERNEL_VERSION

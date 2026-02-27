@@ -16,19 +16,20 @@ cd "${KERNEL_SRC}"
 
 # ── Get the kernel config ──────────────────────────────────────────────────
 # Priority order:
-# 1. Mounted from host at /host-config (bind mount of /proc/config.gz or /boot/config-*)
-# 2. /host-proc/config.gz (if /proc is bind-mounted)
-# 3. Fall back to defconfig + enable required options
+# 1. Pre-extracted config at /host-config/kernel.config (from build-xdna-driver.sh)
+# 2. Mounted /host-config/config.gz
+# 3. Mounted /host-proc/config.gz
+# 4. Fall back to defconfig + TrueNAS options
 
 CONFIG_FOUND=false
 
-if [ -f /host-config/config.gz ]; then
+if [ -f /host-config/kernel.config ]; then
+    echo "Using pre-extracted kernel config from /host-config/kernel.config"
+    cp /host-config/kernel.config .config
+    CONFIG_FOUND=true
+elif [ -f /host-config/config.gz ]; then
     echo "Using kernel config from /host-config/config.gz"
     zcat /host-config/config.gz > .config
-    CONFIG_FOUND=true
-elif [ -f "/host-config/config-${KERNEL_VERSION}" ]; then
-    echo "Using kernel config from /host-config/config-${KERNEL_VERSION}"
-    cp "/host-config/config-${KERNEL_VERSION}" .config
     CONFIG_FOUND=true
 elif [ -f /host-proc/config.gz ]; then
     echo "Using kernel config from /host-proc/config.gz"
@@ -37,17 +38,32 @@ elif [ -f /host-proc/config.gz ]; then
 fi
 
 if [ "$CONFIG_FOUND" = false ]; then
-    echo "WARNING: No host kernel config found. Using defconfig."
-    echo "For best results, mount the host's /proc/config.gz:"
-    echo "  -v /proc:/host-proc:ro"
+    echo "WARNING: No host kernel config found. Using defconfig + TrueNAS options."
     make defconfig
+fi
+
+# ── Ensure TrueNAS-specific config options are set ─────────────────────────
+# The TrueNAS kernel source has #if CONFIG_TRUENAS guards that cause
+# -Werror=undef failures if this isn't defined.
+if ! grep -q "^CONFIG_TRUENAS=y" .config 2>/dev/null; then
+    echo "CONFIG_TRUENAS=y" >> .config
+    echo "  Added CONFIG_TRUENAS=y"
+fi
+
+# Ensure DRM_ACCEL is enabled (required for XDNA)
+if ! grep -q "^CONFIG_DRM_ACCEL=y" .config 2>/dev/null; then
+    echo "CONFIG_DRM_ACCEL=y" >> .config
+    echo "  Added CONFIG_DRM_ACCEL=y"
 fi
 
 # ── Prepare the source tree for external module builds ─────────────────────
 # Set the kernel version to match the running kernel
 # This ensures Module.symvers and version magic align
 make olddefconfig
-make modules_prepare
+
+# Build with relaxed warnings — TrueNAS kernel source may have custom
+# preprocessor guards that trigger -Werror=undef with mismatched configs
+make KCFLAGS="-Wno-error=undef" modules_prepare
 
 # Create the expected symlink for module builds
 HEADERS_DIR="/lib/modules/${KERNEL_VERSION}"

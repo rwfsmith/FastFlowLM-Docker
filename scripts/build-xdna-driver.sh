@@ -77,6 +77,35 @@ echo ""
 # ── Create output directory ───────────────────────────────────────────────
 mkdir -p "${OUTPUT_DIR}"
 
+# ── Extract kernel config on the host ─────────────────────────────────────
+# Docker's /proc mount doesn't always expose config.gz reliably, so we
+# extract it here on the host and pass the plain-text config file in.
+KERNEL_CONFIG_FILE="${OUTPUT_DIR}/kernel-config"
+if [ -f /proc/config.gz ]; then
+    echo "Extracting kernel config from /proc/config.gz..."
+    zcat /proc/config.gz > "${KERNEL_CONFIG_FILE}"
+    echo "  Saved to ${KERNEL_CONFIG_FILE}"
+elif [ -f "/boot/config-${KERNEL_VERSION}" ]; then
+    echo "Copying kernel config from /boot/config-${KERNEL_VERSION}..."
+    cp "/boot/config-${KERNEL_VERSION}" "${KERNEL_CONFIG_FILE}"
+else
+    echo -e "${YELLOW}WARNING: Could not extract kernel config.${NC}"
+    echo "  Neither /proc/config.gz nor /boot/config-${KERNEL_VERSION} found."
+    echo "  The build will use defconfig + CONFIG_TRUENAS=y as fallback."
+    echo "  This may produce a module with version mismatch."
+    KERNEL_CONFIG_FILE=""
+fi
+
+# Ensure CONFIG_TRUENAS is set (TrueNAS kernel source requires it)
+if [ -n "${KERNEL_CONFIG_FILE}" ] && [ -f "${KERNEL_CONFIG_FILE}" ]; then
+    if ! grep -q "CONFIG_TRUENAS" "${KERNEL_CONFIG_FILE}"; then
+        echo "CONFIG_TRUENAS=y" >> "${KERNEL_CONFIG_FILE}"
+        echo "  Added CONFIG_TRUENAS=y to kernel config"
+    fi
+fi
+
+echo ""
+
 # ── Build the Docker image ────────────────────────────────────────────────
 echo ">>> Building Docker image (this downloads ~2GB and takes 10-30 min)..."
 echo ""
@@ -96,8 +125,14 @@ echo ""
 echo ">>> Building XDNA driver inside container..."
 echo ""
 
+# Mount the extracted config file (or the output dir if no config)
+CONFIG_MOUNT=""
+if [ -n "${KERNEL_CONFIG_FILE}" ] && [ -f "${KERNEL_CONFIG_FILE}" ]; then
+    CONFIG_MOUNT="-v ${KERNEL_CONFIG_FILE}:/host-config/kernel.config:ro"
+fi
+
 docker run --rm \
-    -v /proc:/host-proc:ro \
+    ${CONFIG_MOUNT} \
     -v "${OUTPUT_DIR}:/output" \
     -e "KERNEL_VERSION=${KERNEL_VERSION}" \
     xdna-driver-builder
