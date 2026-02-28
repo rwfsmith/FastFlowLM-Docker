@@ -87,6 +87,28 @@ if [ "${SYMVERS_LINES}" -lt 100 ]; then
     export KBUILD_MODPOST_WARN=1
 fi
 
+# ── Fix MODULE_IMPORT_NS format for kernel < 6.13 ─────────────────────────
+# In kernel 6.12, MODULE_IMPORT_NS takes an unquoted argument:
+#   MODULE_IMPORT_NS(DMA_BUF)        →  modinfo: import_ns=DMA_BUF  ✓
+# In kernel 6.13+, it takes a quoted string:
+#   MODULE_IMPORT_NS("DMA_BUF")      →  modinfo: import_ns=DMA_BUF  ✓
+#
+# The xdna-driver's configure_kernel.sh uses try_compile to detect the format,
+# but the test is flawed: MODULE_IMPORT_NS("DMA_BUF") compiles without error
+# on 6.12 too — it just produces wrong modinfo (import_ns="DMA_BUF" with
+# embedded quotes). The kernel's namespace checker then fails to match.
+#
+# Fix: For kernel < 6.13, force the #else branch (unquoted form).
+KMAJOR=$(echo "${KERNEL_VERSION}" | cut -d. -f1)
+KMINOR=$(echo "${KERNEL_VERSION}" | cut -d. -f2)
+if [ "${KMAJOR}" -eq 6 ] && [ "${KMINOR}" -lt 13 ]; then
+    echo "Kernel ${KMAJOR}.${KMINOR} < 6.13 — fixing MODULE_IMPORT_NS format..."
+    for f in $(find /build/xdna-driver/src/driver -name '*.c' -exec grep -l 'HAVE_6_13_MODULE_IMPORT_NS' {} +); do
+        sed -i 's/^#ifdef HAVE_6_13_MODULE_IMPORT_NS/#if 0 \/* forced: kernel < 6.13 uses unquoted MODULE_IMPORT_NS *\//' "$f"
+        echo "  Patched: $f"
+    done
+fi
+
 cd build
 ./build.sh -release || {
     echo ""
