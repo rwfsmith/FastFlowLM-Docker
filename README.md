@@ -2,8 +2,6 @@
 
 A Wyoming Protocol server running [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) on AMD Ryzen AI NPUs — supporting both **Whisper ASR** (speech-to-text) and **LLM conversation** (intent handling) for [Home Assistant](https://www.home-assistant.io/) and other Wyoming-compatible voice assistants.
 
-Designed for **TrueNAS Scale** with AMD Ryzen AI (Strix/Strix Halo/Kraken) processors.
-
 > Powered by [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM)
 
 ## Features
@@ -13,7 +11,7 @@ Designed for **TrueNAS Scale** with AMD Ryzen AI (Strix/Strix Halo/Kraken) proce
 - **LLM Conversation on NPU** — intent handling via any FLM-supported model (Llama, Qwen, Gemma, etc.)
 - **Built from source** — FastFlowLM compiled directly inside the Docker image
 - **NPU passthrough** — AMD XDNA2 NPU device access from within the container
-- **TrueNAS Scale ready** — includes XDNA driver setup guide for TrueNAS's custom kernel
+- **One-command setup** — automated script installs driver, Docker, and deploys everything
 - **Dual-mode** — run ASR only, LLM only, or both simultaneously on separate Wyoming ports
 
 ## Requirements
@@ -21,133 +19,148 @@ Designed for **TrueNAS Scale** with AMD Ryzen AI (Strix/Strix Halo/Kraken) proce
 ### Hardware
 - AMD Ryzen AI processor with **XDNA2 NPU** (Strix, Strix Halo, or Kraken series)
 
-### Host System (TrueNAS Scale)
-- **TrueNAS Scale 25.04+** (Debian-based, kernel 6.10+)
-- **AMD XDNA driver** (`amdxdna.ko`) loaded — creates `/dev/accel/accel*`
-- **Docker** (included with TrueNAS Scale)
-- Internet access for initial model downloads from HuggingFace
-
-> Also works on standard Ubuntu 24.04+ or any Debian-based Linux with kernel >= 6.10.
+### Host System
+- **Ubuntu 24.04+** with kernel >= 6.10 (recommended)
+- Or **any Debian-based Linux** with kernel >= 6.10
+- Or **TrueNAS Scale** with an Ubuntu VM (see [TrueNAS VM Setup](#truenas-scale-vm-setup) below)
 
 ---
 
-## TrueNAS Scale: NPU Driver Setup
+## Quick Start (Ubuntu)
 
-TrueNAS Scale uses a custom kernel (e.g., `6.12.33-production+truenas`) that doesn't ship with the `amdxdna` module. Since **TrueNAS disables `apt`** to protect the appliance, we build the driver **inside a Docker container** and extract the compiled module to load on the host.
-
-### Step 0: Verify NPU hardware is detected
-
-```bash
-# Should show your Strix NPU
-lspci | grep -i neural
-# Example output: XX:00.0 Signal processing controller: AMD Strix Neural Processing Unit
-
-# Check kernel version (must be >= 6.10)
-uname -r
-
-# Check if DRM_ACCEL is enabled in the kernel (required for XDNA)
-zcat /proc/config.gz 2>/dev/null | grep CONFIG_DRM_ACCEL
-# Must show: CONFIG_DRM_ACCEL=y
-```
-
-You can also run the included diagnostic script:
-```bash
-sudo bash scripts/check-npu.sh
-```
-
-### Step 1: Build the XDNA driver (via Docker)
-
-The build script clones the TrueNAS kernel source and AMD XDNA driver inside a Docker container, compiles everything against your running kernel, and extracts the module + firmware:
-
-```bash
-# Clone this repo on the TrueNAS host
-git clone https://github.com/rwfsmith/FastFlowLM-Docker.git
-cd FastFlowLM-Docker
-
-# Build the driver (takes 10-30 min on first run)
-sudo bash scripts/build-xdna-driver.sh
-```
-
-**What happens under the hood:**
-1. A Debian Docker image is built with all the build tools (gcc, cmake, etc.)
-2. The [TrueNAS kernel source](https://github.com/truenas/linux) is cloned to generate matching headers
-3. The [AMD XDNA driver](https://github.com/amd/xdna-driver) is compiled against those headers
-4. The compiled `amdxdna.ko` module and NPU firmware are extracted to `./xdna-driver-output/`
-
-> No packages are installed on the TrueNAS host — everything builds inside Docker.
-
-### Step 2: Load the driver
-
-```bash
-# Install and load the built driver
-sudo bash xdna-driver-output/load-driver.sh
-```
-
-This copies the kernel module to `/lib/modules/$(uname -r)/extra/`, installs NPU firmware, runs `depmod`, loads the module, and sets device permissions for Docker access.
-
-```bash
-# Verify the NPU device appeared
-ls -la /dev/accel/
-# Should show: accel0 (or similar)
-```
-
-### Step 3: Auto-load on boot (survives reboots, NOT TrueNAS updates)
-
-```bash
-# Auto-load the module at boot
-echo "amdxdna" | sudo tee /etc/modules-load.d/amdxdna.conf
-
-# Create a startup script to fix permissions after boot
-sudo tee /etc/rc.local > /dev/null << 'BOOT_EOF'
-#!/bin/bash
-modprobe amdxdna
-sleep 2
-chmod 666 /dev/accel/accel* 2>/dev/null
-chmod 666 /dev/dri/renderD* 2>/dev/null
-BOOT_EOF
-sudo chmod +x /etc/rc.local
-```
-
-> **Important:** After TrueNAS updates that change the kernel, re-run `sudo bash scripts/build-xdna-driver.sh` and `sudo bash xdna-driver-output/load-driver.sh` to rebuild the module for the new kernel.
-
----
-
-## Quick Start
-
-### 1. Clone & Build
+On a bare-metal Ubuntu system or VM with NPU access:
 
 ```bash
 git clone https://github.com/rwfsmith/FastFlowLM-Docker.git
 cd FastFlowLM-Docker
-
-# Build the Docker image (this compiles FastFlowLM from source — takes ~15-20 min)
-docker compose build
+sudo bash scripts/vm-setup.sh
 ```
 
-### 2. Configure
+This single script:
+1. Verifies NPU hardware and kernel version
+2. Installs all build dependencies
+3. Installs Docker
+4. Builds and installs the AMD XDNA driver
+5. Builds the FastFlowLM Docker image (compiles from source)
+6. Starts the Wyoming Protocol services
 
-```bash
-cp .env.example .env
-# Edit .env to set your preferred models and ports
-```
-
-### 3. Run
-
-```bash
-# Start both ASR + LLM Wyoming servers
-docker compose up -d
-
-# Or run a specific service only:
-docker compose up -d fastflowlm-asr    # Whisper ASR only
-docker compose up -d fastflowlm-llm    # LLM conversation only
-```
-
-### 4. Connect to Home Assistant
-
-In Home Assistant, add a Wyoming integration:
-
+After setup, add Wyoming integrations in Home Assistant:
 - **ASR (Whisper)**: `tcp://YOUR_HOST_IP:10300`
 - **LLM (Conversation)**: `tcp://YOUR_HOST_IP:10400`
+
+---
+
+## TrueNAS Scale VM Setup
+
+TrueNAS Scale's locked-down kernel makes direct driver installation impractical. Instead, run FastFlowLM inside an **Ubuntu VM** with NPU passthrough — the driver installs cleanly and survives TrueNAS updates.
+
+### Step 1: Identify the NPU on TrueNAS
+
+```bash
+# On the TrueNAS host shell:
+lspci -nn | grep -i neural
+# Example: c7:00.1 Signal processing controller [1180]: AMD Strix Neural Processing Unit [1022:17f0]
+```
+
+### Step 2: Isolate the NPU for passthrough
+
+1. **TrueNAS UI → System → Advanced → Isolated GPU Devices**
+2. Check the NPU entry (e.g., "Strix Neural Processing Unit")
+3. **Reboot TrueNAS** (required for isolation to take effect)
+
+Verify isolation after reboot:
+```bash
+lspci -k | grep -A2 -i neural
+# Should show: Kernel driver in use: vfio-pci
+```
+
+### Step 3: Create the Ubuntu VM
+
+1. **TrueNAS UI → Virtualization → Add VM**
+   - **Guest OS:** Linux
+   - **CPUs:** 4+ (8 recommended for build speed)
+   - **Memory:** 8192 MB+ (16384 recommended)
+   - **Disk:** 32+ GB (zvol)
+   - **NIC:** attach to your LAN bridge
+   - **Install Media:** Ubuntu Server 24.04 LTS ISO
+
+2. **Add PCI passthrough:**
+   - VM → Devices → Add → **PCI Passthrough Device**
+   - Select the NPU (e.g., `0000:c7:00.1 Strix Neural Processing Unit`)
+
+3. **Install Ubuntu Server** (minimal install is fine)
+
+4. **After install, upgrade the kernel** (if default is < 6.10):
+   ```bash
+   sudo apt install linux-generic-hwe-24.04
+   sudo reboot
+   ```
+
+### Step 4: Run the setup script
+
+SSH into the VM and run:
+
+```bash
+git clone https://github.com/rwfsmith/FastFlowLM-Docker.git
+cd FastFlowLM-Docker
+sudo bash scripts/vm-setup.sh
+```
+
+### Step 5: Connect Home Assistant
+
+In Home Assistant, add Wyoming integrations pointing to the **VM's IP**:
+- **ASR**: `tcp://VM_IP:10300`
+- **LLM**: `tcp://VM_IP:10400`
+
+> **Tip:** Give the VM a static IP or DHCP reservation so Home Assistant doesn't lose the connection.
+
+---
+
+## Manual Setup
+
+If you prefer to install components individually:
+
+### 1. Install the XDNA driver
+
+```bash
+sudo apt install -y linux-headers-$(uname -r) git cmake build-essential \
+  libelf-dev libdrm-dev pkg-config python3 pciutils libudev-dev \
+  libboost-dev libboost-filesystem-dev libboost-program-options-dev \
+  libssl-dev rapidjson-dev uuid-dev curl protobuf-compiler \
+  libprotobuf-dev ocl-icd-opencl-dev opencl-headers bc bison flex
+
+git clone --recursive https://github.com/amd/xdna-driver.git
+cd xdna-driver
+./tools/amdxdna_deps.sh
+cd build && ./build.sh -release
+
+sudo dpkg -i Release/xrt_*-amd64-base.deb
+sudo dpkg -i Release/xrt_plugin*-amdxdna.deb
+sudo modprobe amdxdna
+
+# Verify
+ls -la /dev/accel/
+```
+
+### 2. Install Docker
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### 3. Deploy FastFlowLM-Docker
+
+```bash
+git clone https://github.com/rwfsmith/FastFlowLM-Docker.git
+cd FastFlowLM-Docker
+cp .env.example .env    # Edit to customize models/ports
+docker compose build    # ~15-20 min (compiles FastFlowLM from source)
+docker compose up -d
+```
+
+---
 
 ## Architecture
 
@@ -194,6 +207,22 @@ In Home Assistant, add a Wyoming integration:
 | `FLM_MODEL_PATH` | `/data/models` | Model storage directory |
 | `FLM_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
+## Service Profiles
+
+```bash
+# Start both ASR + LLM (default)
+docker compose up -d
+
+# ASR only (Whisper speech-to-text)
+docker compose --profile asr up -d
+
+# LLM only (conversation/intent handling)
+docker compose --profile llm up -d
+
+# All services
+docker compose --profile all up -d
+```
+
 ## Supported Models
 
 ### ASR (Speech-to-Text)
@@ -208,12 +237,77 @@ Any model supported by FastFlowLM:
 - `deepseek-r1:1.5b`
 - And more — run `flm list` inside the container to see all available models
 
+## Troubleshooting
+
+### NPU not detected in VM
+```bash
+# Check if the NPU is visible
+lspci | grep -i "neural\|17f0\|1502"
+
+# If not visible:
+# 1. Ensure the device is isolated on the TrueNAS host (System → Advanced → Isolated GPU Devices)
+# 2. Reboot TrueNAS after isolating
+# 3. Stop and start (not reboot) the VM after adding the PCI device
+```
+
+### No `/dev/accel/` after driver install
+```bash
+# Check if module is loaded
+lsmod | grep amdxdna
+
+# Load manually
+sudo modprobe amdxdna
+
+# Check dmesg for errors
+dmesg | grep -i xdna
+
+# If firmware is missing:
+dmesg | grep -i "firmware\|amdnpu"
+# Firmware should be in /usr/lib/firmware/amdnpu/
+```
+
+### NPU not accessible inside the container
+```bash
+# Check host device exists
+ls -la /dev/accel/
+
+# Check device permissions
+sudo chmod 666 /dev/accel/accel*
+sudo chmod 666 /dev/dri/renderD*
+
+# Verify inside container
+docker exec -it fastflowlm-docker ls -la /dev/accel/ /dev/dri/
+```
+
+### Model download failures
+```bash
+# Force re-download a model
+docker exec -it fastflowlm-docker flm pull llama3.2:1b --force
+
+# Check model storage
+docker exec -it fastflowlm-docker ls -la /data/models/
+```
+
+### Container logs
+```bash
+docker compose logs -f              # All services
+docker compose logs -f fastflowlm   # Combined service
+```
+
+### Rebuild after kernel update
+If the kernel is updated (e.g., via `apt upgrade`), the XDNA driver must be rebuilt:
+```bash
+cd ~/xdna-driver  # or re-clone
+cd build && ./build.sh -release
+sudo dpkg -i Release/xrt_plugin*-amdxdna.deb
+sudo modprobe amdxdna
+```
+
 ## Development
 
 ### Build from source locally
 
 ```bash
-# Build with BuildKit for faster builds
 DOCKER_BUILDKIT=1 docker build -t fastflowlm-docker .
 
 # Run interactively for debugging
@@ -229,7 +323,6 @@ docker run -it --rm \
 ### Run the Wyoming server outside Docker
 
 ```bash
-# Install dependencies
 pip install wyoming openai aiohttp
 
 # Start FLM server on the host
@@ -242,68 +335,6 @@ python -m wyoming_flm \
   --asr-uri tcp://0.0.0.0:10300 \
   --llm-uri tcp://0.0.0.0:10400 \
   --mode both
-```
-
-## Troubleshooting
-
-### No `/dev/accel/` on TrueNAS Scale
-```bash
-# 1. Check that the NPU hardware is seen
-lspci | grep -i neural
-# Should show: AMD Strix Neural Processing Unit
-
-# 2. Check if the XDNA driver module is loaded
-lsmod | grep amdxdna
-# If empty, the module isn't loaded
-
-# 3. Check if kernel supports DRM_ACCEL
-zcat /proc/config.gz 2>/dev/null | grep CONFIG_DRM_ACCEL
-# Must show CONFIG_DRM_ACCEL=y
-
-# 4. If the module exists but isn't loaded:
-sudo modprobe amdxdna
-
-# 5. If modprobe fails with "not found", rebuild the driver via Docker:
-sudo bash scripts/build-xdna-driver.sh
-sudo bash xdna-driver-output/load-driver.sh
-
-# 6. Fix device permissions for Docker access
-sudo chmod 666 /dev/accel/accel*
-sudo chmod 666 /dev/dri/renderD*
-```
-
-### XDNA driver broke after TrueNAS update
-TrueNAS updates can replace the kernel. Rebuild the XDNA driver:
-```bash
-cd FastFlowLM-Docker
-sudo bash scripts/build-xdna-driver.sh
-sudo bash xdna-driver-output/load-driver.sh
-```
-
-### NPU not accessible inside the container
-```bash
-# Check that the device is passed through
-docker exec -it fastflowlm-docker ls -la /dev/accel/ /dev/dri/
-
-# If /dev/accel doesn't exist in the container, verify host:
-ls -la /dev/accel/
-# And check docker-compose.yml has the devices: section
-```
-
-### Model download failures
-```bash
-# Force re-download a model
-docker exec -it fastflowlm-docker flm pull llama3.2:1b --force
-
-# Check model storage
-docker exec -it fastflowlm-docker ls -la /data/models/
-```
-
-### Container logs
-```bash
-docker compose logs -f fastflowlm
-docker compose logs -f fastflowlm-asr
-docker compose logs -f fastflowlm-llm
 ```
 
 ## License
