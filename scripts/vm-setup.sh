@@ -90,40 +90,52 @@ log "Kernel headers: /lib/modules/${KERNEL_VERSION}/build"
 # ── Step 2: Install system dependencies ────────────────────────────────────
 step "Step 2/6: Installing system dependencies"
 
-apt-get update
-apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    cmake \
-    libelf-dev \
-    libdrm-dev \
-    pkg-config \
-    python3 \
-    python3-pip \
-    pciutils \
-    dkms \
-    libudev-dev \
-    libboost-dev \
-    libboost-filesystem-dev \
-    libboost-program-options-dev \
-    libssl-dev \
-    rapidjson-dev \
-    uuid-dev \
-    curl \
-    protobuf-compiler \
-    libprotobuf-dev \
-    ocl-icd-opencl-dev \
-    ocl-icd-libopencl1 \
-    opencl-headers \
-    bc \
-    bison \
-    flex \
-    kmod \
-    ca-certificates \
-    gnupg \
-    lsb-release
+# Check if key build packages are already installed
+DEPS_NEEDED=false
+for pkg in build-essential cmake git libelf-dev libdrm-dev dkms; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+        DEPS_NEEDED=true
+        break
+    fi
+done
 
-log "System dependencies installed."
+if [ "$DEPS_NEEDED" = true ]; then
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        cmake \
+        libelf-dev \
+        libdrm-dev \
+        pkg-config \
+        python3 \
+        python3-pip \
+        pciutils \
+        dkms \
+        libudev-dev \
+        libboost-dev \
+        libboost-filesystem-dev \
+        libboost-program-options-dev \
+        libssl-dev \
+        rapidjson-dev \
+        uuid-dev \
+        curl \
+        protobuf-compiler \
+        libprotobuf-dev \
+        ocl-icd-opencl-dev \
+        ocl-icd-libopencl1 \
+        opencl-headers \
+        bc \
+        bison \
+        flex \
+        kmod \
+        ca-certificates \
+        gnupg \
+        lsb-release
+    log "System dependencies installed."
+else
+    log "System dependencies already installed. Skipping."
+fi
 
 # ── Step 3: Install Docker ─────────────────────────────────────────────────
 step "Step 3/6: Installing Docker"
@@ -159,53 +171,82 @@ step "Step 4/6: Building AMD XDNA driver"
 
 XDNA_BUILD_DIR="/tmp/xdna-driver-build"
 
-if [ -c /dev/accel/accel0 ] 2>/dev/null; then
-    log "XDNA driver already loaded (/dev/accel/accel0 exists). Skipping build."
+# Check if driver is already installed AND loaded
+DRIVER_INSTALLED=false
+if dpkg -s xrt-amdxdna >/dev/null 2>&1 || dpkg -l | grep -q xrt-plugin.*amdxdna; then
+    DRIVER_INSTALLED=true
+fi
+
+if [ -c /dev/accel/accel0 ] 2>/dev/null && [ "$DRIVER_INSTALLED" = true ]; then
+    log "XDNA driver already installed and loaded (/dev/accel/accel0 exists). Skipping build."
 else
-    # Clean previous attempts
-    rm -rf "${XDNA_BUILD_DIR}"
-    mkdir -p "${XDNA_BUILD_DIR}"
-
-    echo "Cloning AMD XDNA driver..."
-    git clone --recursive https://github.com/amd/xdna-driver.git "${XDNA_BUILD_DIR}/xdna-driver"
-    cd "${XDNA_BUILD_DIR}/xdna-driver"
-
-    # Install XDNA-specific dependencies
-    if [ -f ./tools/amdxdna_deps.sh ]; then
-        echo "Running XDNA dependency installer..."
-        ./tools/amdxdna_deps.sh || warn "Some optional deps may have failed (non-fatal)"
-    fi
-
-    # Build
-    echo "Building XDNA driver (this takes 10-20 minutes)..."
-    cd build
-    ./build.sh -release
-
-    # Install
-    echo "Installing XDNA driver packages..."
-    dpkg -i ./Release/xrt_*-amd64-base.deb 2>/dev/null || apt-get install -f -y
-    dpkg -i ./Release/xrt_plugin*-amdxdna.deb 2>/dev/null || apt-get install -f -y
-
-    # Load the module
-    modprobe amdxdna 2>/dev/null || true
-
-    # Wait for device to appear
-    sleep 2
-
-    if [ -c /dev/accel/accel0 ] 2>/dev/null; then
-        log "XDNA driver loaded successfully!"
-        ls -la /dev/accel/
+    if [ "$DRIVER_INSTALLED" = true ]; then
+        log "XDNA driver packages installed but device not active. Trying modprobe..."
+        modprobe amdxdna 2>/dev/null || true
+        sleep 2
+        if [ -c /dev/accel/accel0 ] 2>/dev/null; then
+            log "XDNA driver loaded successfully!"
+            ls -la /dev/accel/
+        else
+            warn "modprobe didn't create /dev/accel/accel0. May need rebuild or reboot."
+        fi
     else
-        warn "Driver installed but /dev/accel/accel0 not found."
-        echo "  Check: dmesg | grep -i xdna"
-        echo "  You may need to reboot the VM."
-    fi
+        # Full build needed
+        rm -rf "${XDNA_BUILD_DIR}"
+        mkdir -p "${XDNA_BUILD_DIR}"
 
-    # Ensure module loads on boot
+        echo "Cloning AMD XDNA driver..."
+        git clone --recursive https://github.com/amd/xdna-driver.git "${XDNA_BUILD_DIR}/xdna-driver"
+        cd "${XDNA_BUILD_DIR}/xdna-driver"
+
+        # Install XDNA-specific dependencies
+        if [ -f ./tools/amdxdna_deps.sh ]; then
+            echo "Running XDNA dependency installer..."
+            ./tools/amdxdna_deps.sh || warn "Some optional deps may have failed (non-fatal)"
+        fi
+
+        # Build
+        echo "Building XDNA driver (this takes 10-20 minutes)..."
+        cd build
+        ./build.sh -release
+
+        # Install
+        echo "Installing XDNA driver packages..."
+        dpkg -i ./Release/xrt_*-amd64-base.deb 2>/dev/null || apt-get install -f -y
+        dpkg -i ./Release/xrt_plugin*-amdxdna.deb 2>/dev/null || apt-get install -f -y
+
+        # Load the module
+        modprobe amdxdna 2>/dev/null || true
+
+        # Wait for device to appear
+        sleep 2
+
+        if [ -c /dev/accel/accel0 ] 2>/dev/null; then
+            log "XDNA driver loaded successfully!"
+            ls -la /dev/accel/
+        else
+            warn "Driver installed but /dev/accel/accel0 not found."
+            echo "  Check: dmesg | grep -i xdna"
+            echo "  You may need to reboot the VM."
+        fi
+
+        # Clean up build directory
+        cd /
+        rm -rf "${XDNA_BUILD_DIR}"
+        log "Build directory cleaned up."
+    fi
+fi
+
+# Ensure module auto-load, udev rules, and limits are always set
+# (idempotent — safe to re-run)
+if [ ! -f /etc/modules-load.d/amdxdna.conf ]; then
     echo "amdxdna" > /etc/modules-load.d/amdxdna.conf
     log "Module set to auto-load on boot."
+else
+    log "Module auto-load already configured."
+fi
 
-    # Set device permissions
+if [ ! -f /etc/udev/rules.d/99-amdxdna.rules ]; then
     cat > /etc/udev/rules.d/99-amdxdna.rules << 'UDEV_EOF'
 SUBSYSTEM=="accel", MODE="0666"
 SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"
@@ -213,18 +254,18 @@ UDEV_EOF
     udevadm control --reload-rules 2>/dev/null || true
     udevadm trigger 2>/dev/null || true
     log "Udev rules installed for NPU device permissions."
+else
+    log "Udev rules already installed."
+fi
 
-    # Set memlock limits
+if [ ! -f /etc/security/limits.d/99-amdxdna.conf ]; then
     cat > /etc/security/limits.d/99-amdxdna.conf << 'LIMITS_EOF'
 * soft memlock unlimited
 * hard memlock unlimited
 LIMITS_EOF
     log "Memory lock limits set to unlimited."
-
-    # Clean up build directory
-    cd /
-    rm -rf "${XDNA_BUILD_DIR}"
-    log "Build directory cleaned up."
+else
+    log "Memory lock limits already configured."
 fi
 
 # ── Step 5: Clone / update FastFlowLM-Docker ───────────────────────────────
@@ -246,6 +287,8 @@ fi
 if [ ! -f "${PROJECT_DIR}/.env" ]; then
     cp "${PROJECT_DIR}/.env.example" "${PROJECT_DIR}/.env"
     log "Created .env from .env.example (edit to customize models/ports)."
+else
+    log ".env already exists. Keeping current configuration."
 fi
 
 chown -R "${REAL_USER}:${REAL_USER}" "${PROJECT_DIR}"
@@ -256,11 +299,23 @@ step "Step 6/6: Building and starting FastFlowLM containers"
 
 cd "${PROJECT_DIR}"
 
-echo "Building Docker image (compiles FastFlowLM from source — ~15-20 min)..."
-sudo -u "${REAL_USER}" docker compose build
+# Check if the Docker image already exists
+if docker images --format '{{.Repository}}' 2>/dev/null | grep -q 'fastflowlm'; then
+    log "FastFlowLM Docker image already built."
+    # Check if containers are running
+    if docker compose ps --status running 2>/dev/null | grep -q 'fastflowlm'; then
+        log "FastFlowLM containers already running. Skipping."
+    else
+        echo "Starting services..."
+        sudo -u "${REAL_USER}" docker compose up -d
+    fi
+else
+    echo "Building Docker image (compiles FastFlowLM from source — ~15-20 min)..."
+    sudo -u "${REAL_USER}" docker compose build
 
-echo "Starting services..."
-sudo -u "${REAL_USER}" docker compose up -d
+    echo "Starting services..."
+    sudo -u "${REAL_USER}" docker compose up -d
+fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
 VM_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_VM_IP")
