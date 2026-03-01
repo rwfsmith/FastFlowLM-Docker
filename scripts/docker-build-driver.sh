@@ -75,6 +75,16 @@ if [ -d /build/xdna-driver/drivers/accel ]; then
     sed -i '/add_subdirectory.*accel/d' /build/xdna-driver/drivers/CMakeLists.txt 2>/dev/null || true
 fi
 
+# Remove the vxdna/ (virtual XDNA) component — it requires drm/virtgpu_drm.h
+# and drm/drm.h kernel UAPI headers that aren't available in our build
+# environment. vxdna is for virtio-GPU passthrough which we don't need
+# for bare-metal NPU access.
+if [ -d /build/xdna-driver/src/vxdna ]; then
+    echo "Removing src/vxdna/ (virtual GPU passthrough, not needed for bare-metal)..."
+    rm -rf /build/xdna-driver/src/vxdna
+    sed -i '/add_subdirectory.*vxdna/d' /build/xdna-driver/src/CMakeLists.txt 2>/dev/null || true
+fi
+
 # If Module.symvers is empty/small, modpost can't resolve kernel symbols.
 # KBUILD_MODPOST_WARN turns those errors into warnings so the build succeeds.
 # The symbols DO exist in the running kernel — they just can't be CRC-verified
