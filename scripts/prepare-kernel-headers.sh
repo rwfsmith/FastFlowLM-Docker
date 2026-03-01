@@ -56,18 +56,24 @@ if ! grep -q "^CONFIG_DRM_ACCEL=y" .config 2>/dev/null; then
     echo "  Added CONFIG_DRM_ACCEL=y"
 fi
 
-# Keep CONFIG_MODVERSIONS=y — the running kernel has modversions enabled,
-# and its vermagic string includes "modversions". Our module's vermagic must
-# match EXACTLY, so we must also build with CONFIG_MODVERSIONS=y.
-# Without Module.symvers, modpost will emit CRC warnings (KBUILD_MODPOST_WARN=1
-# prevents these from being fatal). At load time, we use insmod -f to skip
-# CRC verification since we can't produce valid CRCs without Module.symvers.
-if grep -q "^CONFIG_MODVERSIONS=y" .config 2>/dev/null; then
-    echo "  CONFIG_MODVERSIONS=y (keeping enabled to match running kernel vermagic)"
-else
-    echo "CONFIG_MODVERSIONS=y" >> .config
-    echo "  Added CONFIG_MODVERSIONS=y (required for vermagic match)"
+# Disable CONFIG_MODVERSIONS — we MUST build without it.
+# The running kernel has modversions enabled, but we don't have Module.symvers
+# so the build generates CRC stubs. When these get partially linked (ld -r),
+# the CRC relocations get pre-resolved, leaving non-zero values at relocation
+# targets. Kernel 6.12+ rejects this with:
+#   "Invalid relocation target, existing value is nonzero for type 1"
+#
+# Building without modversions means no CRC symbols, no bad relocations.
+# The vermagic won't include "modversions" but insmod -f bypasses BOTH
+# vermagic and modversions checks, so this is fine.
+sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' .config 2>/dev/null || true
+sed -i '/^# CONFIG_MODVERSIONS is not set$/!{/CONFIG_MODVERSIONS/d}' .config 2>/dev/null || true
+if ! grep -q 'CONFIG_MODVERSIONS' .config 2>/dev/null; then
+    echo '# CONFIG_MODVERSIONS is not set' >> .config
 fi
+# Also disable ASM_MODVERSIONS which depends on MODVERSIONS
+sed -i 's/^CONFIG_ASM_MODVERSIONS=y/# CONFIG_ASM_MODVERSIONS is not set/' .config 2>/dev/null || true
+echo "  CONFIG_MODVERSIONS=n (avoids invalid relocations without Module.symvers)"
 
 # ── Prepare the source tree for external module builds ─────────────────────
 echo ""

@@ -166,10 +166,9 @@ if [ -n "${AMDXDNA_KO}" ]; then
     cp "${AMDXDNA_KO}" "${OUTPUT_DIR}/modules/"
     echo "Module: ${OUTPUT_DIR}/modules/$(basename ${AMDXDNA_KO})"
 
-    # NOTE: We do NOT strip the __versions section. Even though our CRCs
-    # are invalid (no Module.symvers), insmod -f will bypass CRC checks.
-    # Stripping __versions can cause the kernel to reject the module
-    # entirely because check_version() fails when the section is missing.
+    # Module is built without CONFIG_MODVERSIONS, so there's no __versions
+    # section and no CRC symbols. This avoids "Invalid relocation target"
+    # errors on kernel 6.12+. We use insmod -f to bypass vermagic checks.
     echo "Module ready: ${OUTPUT_DIR}/modules/amdxdna.ko"
 else
     echo "WARNING: amdxdna.ko not found in build tree!"
@@ -289,19 +288,20 @@ for DEP_MOD in drm drm_kms_helper drm_shmem_helper accel; do
 done
 
 # ── Load the module ───────────────────────────────────────────────────────
-# We use insmod -f because the module was built without a valid
-# Module.symvers, so CRC version checks (modversions) will fail.
-# The -f flag sets MODULE_INIT_IGNORE_MODVERSIONS | MODULE_INIT_IGNORE_VERMAGIC,
-# which bypasses CRC checks. This is safe — the symbols DO exist in the
-# running kernel; we just can't verify their CRCs at build time.
+# The module is built without CONFIG_MODVERSIONS (to avoid "Invalid relocation
+# target" errors). This means the vermagic won't include "modversions", so
+# it won't match the running kernel's vermagic exactly.
+# insmod -f sets MODULE_INIT_IGNORE_MODVERSIONS | MODULE_INIT_IGNORE_VERMAGIC,
+# bypassing this check. This is safe — the symbols DO exist in the running
+# kernel; the only difference is the modversions flag in vermagic.
 echo "Loading amdxdna module..."
 
-# Try regular insmod first (works if we got a valid Module.symvers)
+# Try regular insmod first (works if vermagic matches exactly)
 if insmod "${MODULE}" 2>/dev/null; then
     echo "  Module loaded successfully."
 else
-    echo "  Regular insmod failed (expected without Module.symvers)."
-    echo "  Loading with insmod -f (bypass CRC checks)..."
+    echo "  Regular insmod failed (expected — vermagic differs on modversions flag)."
+    echo "  Loading with insmod -f (bypass vermagic check)..."
     if insmod -f "${MODULE}" 2>&1; then
         echo "  Module loaded with force flag."
         echo "  (Kernel will show 'module verification failed' — this is normal)"
