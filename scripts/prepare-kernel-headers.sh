@@ -106,12 +106,19 @@ sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION =/" Makefile
 # like "6.12.33-production+truenas+truenas".
 rm -f "${KERNEL_SRC}"/localversion*
 echo "${RUNNING_LOCALVER}" > "${KERNEL_SRC}/localversion"
-# Disable auto-appending of git revision to version string
+# Disable auto-appending of git revision to version string.
+# The kernel build calls scripts/setlocalversion which detects a dirty git tree
+# and appends "+" to the version string. We must prevent this entirely:
+#   1. Remove .git so setlocalversion can't detect git at all
+#   2. Create empty .scmversion as a secondary guard
+#   3. Disable CONFIG_LOCALVERSION_AUTO in .config
+rm -rf "${KERNEL_SRC}/.git"
+echo "  Removed .git directory (prevents dirty-tree '+' suffix)"
 touch "${KERNEL_SRC}/.scmversion"
-# Also disable CONFIG_LOCALVERSION_AUTO to prevent git-based suffix
-if grep -q "CONFIG_LOCALVERSION_AUTO" .config 2>/dev/null; then
-    sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' .config
-fi
+# Disable CONFIG_LOCALVERSION_AUTO — force it off regardless of whether
+# the line already exists (make olddefconfig defaults it to y)
+sed -i '/CONFIG_LOCALVERSION_AUTO/d' .config 2>/dev/null || true
+echo "# CONFIG_LOCALVERSION_AUTO is not set" >> .config
 # Clear CONFIG_LOCALVERSION to avoid double-appending
 sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' .config 2>/dev/null || true
 
