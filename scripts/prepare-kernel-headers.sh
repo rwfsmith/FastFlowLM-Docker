@@ -99,9 +99,21 @@ sed -i "s/^SUBLEVEL = .*/SUBLEVEL = ${RUNNING_SUBLEVEL}/" Makefile
 sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION =/" Makefile
 
 # Set LOCALVERSION to match the running kernel's suffix
+# IMPORTANT: Remove ALL existing localversion* files first!
+# The TrueNAS kernel source ships with localversion files (e.g., localversion.truenas)
+# that append "+truenas". Our RUNNING_LOCALVER already includes "+truenas"
+# (from "-production+truenas"), so having both would produce a double suffix
+# like "6.12.33-production+truenas+truenas".
+rm -f "${KERNEL_SRC}"/localversion*
 echo "${RUNNING_LOCALVER}" > "${KERNEL_SRC}/localversion"
 # Disable auto-appending of git revision to version string
 touch "${KERNEL_SRC}/.scmversion"
+# Also disable CONFIG_LOCALVERSION_AUTO to prevent git-based suffix
+if grep -q "CONFIG_LOCALVERSION_AUTO" .config 2>/dev/null; then
+    sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' .config
+fi
+# Clear CONFIG_LOCALVERSION to avoid double-appending
+sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' .config 2>/dev/null || true
 
 # Verify
 echo "  Source Makefile version:"

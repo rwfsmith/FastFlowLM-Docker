@@ -245,6 +245,23 @@ if lsmod | grep -q "^amdxdna "; then
     rmmod amdxdna 2>/dev/null || true
 fi
 
+# ── Load prerequisite kernel modules ──────────────────────────────────────
+# amdxdna depends on drm_shmem_helper (for drm_gem_shmem_* symbols) and
+# the base drm/accel subsystem. These are shipped with TrueNAS but may
+# not be loaded by default.
+echo "Loading prerequisite modules..."
+for DEP_MOD in drm drm_kms_helper drm_shmem_helper accel; do
+    if ! lsmod | grep -q "^${DEP_MOD} "; then
+        if modprobe "${DEP_MOD}" 2>/dev/null; then
+            echo "  Loaded: ${DEP_MOD}"
+        else
+            echo "  Skipped: ${DEP_MOD} (not available or already built-in)"
+        fi
+    else
+        echo "  Already loaded: ${DEP_MOD}"
+    fi
+done
+
 # ── Load the module ───────────────────────────────────────────────────────
 # We use insmod -f because the module was built without a valid
 # Module.symvers, so CRC version checks (modversions) will fail.
