@@ -55,11 +55,31 @@ echo ""
 step "Step 1/6: Pre-flight checks"
 
 # Check for AMD NPU
-NPU_PCI=$(lspci 2>/dev/null | grep -i "neural\|xdna\|17f0\|1502" || true)
+# Use -nn to show numeric vendor/device IDs so we can match by PCI ID
+# AMD NPU IDs: 1022:17f0 (XDNA1 / Hawk Point), 1022:1502 (XDNA2 / Strix)
+# Descriptions may include: "IPU", "AI", "Neural", "Signal processing controller"
+NPU_PCI=$(lspci -nn 2>/dev/null | grep -iE "1022:(17f0|1502)|neural|xdna|IPU Device" || true)
 if [ -z "$NPU_PCI" ]; then
     err "No AMD NPU detected in lspci."
-    echo "  If running in a VM, ensure PCIe passthrough is configured."
-    echo "  On the host: lspci -nn | grep -i neural"
+    echo ""
+    echo "  Your lspci shows no AMD NPU hardware in this machine/VM."
+    echo ""
+    echo "  If running in a VM (QEMU/KVM, Proxmox, TrueNAS, etc.):"
+    echo "    1. On the HOST, find the NPU PCI address:"
+    echo "       lspci -nn | grep -iE '1022:(17f0|1502)|neural|IPU'"
+    echo ""
+    echo "    2. Pass it through to the VM using VFIO/PCIe passthrough:"
+    echo "       - Proxmox: VM > Hardware > Add > PCI Device"
+    echo "       - TrueNAS: Virtualization > VM > Devices > Add PCI Passthrough"
+    echo "       - libvirt: virsh edit <vm> and add a <hostdev> entry"
+    echo ""
+    echo "    3. Ensure IOMMU is enabled on the host:"
+    echo "       - AMD: add 'amd_iommu=on iommu=pt' to kernel cmdline"
+    echo "       - Verify: dmesg | grep -i iommu"
+    echo ""
+    echo "  If running on bare metal:"
+    echo "    - Ensure this is an AMD Ryzen AI processor (e.g., Ryzen 7 8845HS, Ryzen AI 9)"
+    echo "    - Check BIOS: enable 'NPU' or 'AI Engine' if the option exists"
     exit 1
 fi
 log "NPU detected: ${NPU_PCI}"
