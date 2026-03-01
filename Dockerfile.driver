@@ -72,6 +72,7 @@ WORKDIR /build/linux-src
 # We copy the running kernel's config (passed in at runtime via /host-config)
 # but also provide a fallback defconfig.
 COPY scripts/prepare-kernel-headers.sh /build/prepare-kernel-headers.sh
+COPY scripts/fix-module-relocations.py /build/fix-module-relocations.py
 RUN chmod +x /build/prepare-kernel-headers.sh
 
 # ── Step 2: Clone XDNA driver ──────────────────────────────────────────────

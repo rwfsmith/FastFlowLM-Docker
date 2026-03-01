@@ -166,9 +166,17 @@ if [ -n "${AMDXDNA_KO}" ]; then
     cp "${AMDXDNA_KO}" "${OUTPUT_DIR}/modules/"
     echo "Module: ${OUTPUT_DIR}/modules/$(basename ${AMDXDNA_KO})"
 
-    # Module is built without CONFIG_MODVERSIONS, so there's no __versions
-    # section and no CRC symbols. This avoids "Invalid relocation target"
-    # errors on kernel 6.12+. We use insmod -f to bypass vermagic checks.
+    # ── Fix pre-resolved relocation targets (kernel 6.12+ hardening) ──────
+    # Kernel 6.12 added apply_relocate_add() checks that reject modules with
+    # non-zero values at R_X86_64_64 relocation targets. The linker's 'ld -r'
+    # (partial linking) can resolve cross-object references and write addresses
+    # to these locations. For RELA relocations, the target should be zero —
+    # the addend is in the relocation entry. Zero the targets to fix this.
+    if [ -f "${OUTPUT_DIR}/modules/amdxdna.ko" ]; then
+        echo "Fixing relocation targets for kernel 6.12+ compatibility..."
+        python3 /build/fix-module-relocations.py "${OUTPUT_DIR}/modules/amdxdna.ko"
+    fi
+
     echo "Module ready: ${OUTPUT_DIR}/modules/amdxdna.ko"
 else
     echo "WARNING: amdxdna.ko not found in build tree!"
