@@ -77,9 +77,16 @@ echo "=== Forcing kernel version to match running kernel ==="
 # kernel (e.g. 6.12.43 vs 6.12.33). We MUST match exactly or insmod will
 # reject the module with 'version magic' mismatch.
 #
-# Kernel version string = KERNELVERSION + LOCALVERSION + auto-generated suffix
-# Strategy: overwrite the Makefile VERSION/PATCHLEVEL/SUBLEVEL to match exactly,
-# and set LOCALVERSION to match the running kernel's suffix.
+# Kernel version string = KERNELVERSION + setlocalversion output
+# KERNELVERSION = VERSION.PATCHLEVEL.SUBLEVEL + EXTRAVERSION  (from Makefile)
+# setlocalversion reads localversion* files and adds SCM (git) suffix.
+#
+# Strategy: Put the ENTIRE local version suffix into EXTRAVERSION in the
+# Makefile. This is always used for KERNELVERSION, with no dependency on
+# setlocalversion or localversion files. Then replace setlocalversion with
+# a no-op so it can't add SCM suffixes. This way, even when the XDNA build
+# regenerates utsrelease.h via `make M=... modules`, the correct version
+# is produced from the Makefile alone.
 
 RUNNING_MAJOR=$(echo "${KERNEL_VERSION}" | cut -d. -f1)
 RUNNING_MINOR=$(echo "${KERNEL_VERSION}" | cut -d. -f2)
@@ -89,50 +96,40 @@ RUNNING_SUBLEVEL=$(echo "${KERNEL_VERSION}" | cut -d. -f3 | sed 's/-.*//')
 RUNNING_LOCALVER=$(echo "${KERNEL_VERSION}" | sed "s/^${RUNNING_MAJOR}\.${RUNNING_MINOR}\.${RUNNING_SUBLEVEL}//")
 
 echo "  Target: VERSION=${RUNNING_MAJOR} PATCHLEVEL=${RUNNING_MINOR} SUBLEVEL=${RUNNING_SUBLEVEL}"
-echo "  Target LOCALVERSION: '${RUNNING_LOCALVER}'"
+echo "  Target EXTRAVERSION: '${RUNNING_LOCALVER}'"
 
-# Patch the top-level Makefile to match running kernel version
+# Patch the top-level Makefile to match running kernel version.
+# Put the local version suffix (e.g. -production+truenas) in EXTRAVERSION
+# so that KERNELVERSION = 6.12.33-production+truenas entirely from the Makefile.
 sed -i "s/^VERSION = .*/VERSION = ${RUNNING_MAJOR}/" Makefile
 sed -i "s/^PATCHLEVEL = .*/PATCHLEVEL = ${RUNNING_MINOR}/" Makefile
 sed -i "s/^SUBLEVEL = .*/SUBLEVEL = ${RUNNING_SUBLEVEL}/" Makefile
-# Clear any EXTRAVERSION to avoid appending unwanted suffixes
-sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION =/" Makefile
+sed -i "s/^EXTRAVERSION = .*/EXTRAVERSION = ${RUNNING_LOCALVER}/" Makefile
 
-# Set LOCALVERSION to match the running kernel's suffix
-# IMPORTANT: Remove ALL existing localversion* files first!
-# The TrueNAS kernel source ships with localversion files (e.g., localversion.truenas)
-# that append "+truenas". Our RUNNING_LOCALVER already includes "+truenas"
-# (from "-production+truenas"), so having both would produce a double suffix
-# like "6.12.33-production+truenas+truenas".
+# Remove ALL localversion* files — they would double-append the suffix
+# since we already have it in EXTRAVERSION.
 rm -f "${KERNEL_SRC}"/localversion*
-echo "${RUNNING_LOCALVER}" > "${KERNEL_SRC}/localversion"
-# Disable auto-appending of git revision to version string.
-# The kernel build calls scripts/setlocalversion which detects a dirty git tree
-# and appends "+" to the version string. We must prevent this entirely:
-#   1. Remove .git so setlocalversion can't detect git at all
-#   2. Create empty .scmversion as a secondary guard
-#   3. Replace scripts/setlocalversion with a no-op (nuclear option)
+# Do NOT create a new localversion file — EXTRAVERSION handles everything.
+
+# Prevent setlocalversion from adding SCM (git) suffixes:
+#   1. Remove .git so it can't detect git at all
+#   2. Replace scripts/setlocalversion with a no-op
+#   3. Create .scmversion as additional guard
 #   4. Disable CONFIG_LOCALVERSION_AUTO in .config
 rm -rf "${KERNEL_SRC}/.git"
-echo "  Removed .git directory (prevents dirty-tree '+' suffix)"
-touch "${KERNEL_SRC}/.scmversion"
-# Replace setlocalversion with a script that outputs nothing.
-# This is the definitive fix — no matter what heuristics the real script
-# uses (git, file timestamps, hg, svn, etc.), our version outputs "".
 printf '#!/bin/sh\ntrue\n' > "${KERNEL_SRC}/scripts/setlocalversion"
 chmod +x "${KERNEL_SRC}/scripts/setlocalversion"
+touch "${KERNEL_SRC}/.scmversion"
 echo "  Replaced scripts/setlocalversion with no-op"
-# Disable CONFIG_LOCALVERSION_AUTO — force it off regardless of whether
-# the line already exists (make olddefconfig defaults it to y)
+# Disable CONFIG_LOCALVERSION_AUTO
 sed -i '/CONFIG_LOCALVERSION_AUTO/d' .config 2>/dev/null || true
 echo "# CONFIG_LOCALVERSION_AUTO is not set" >> .config
-# Clear CONFIG_LOCALVERSION to avoid double-appending
+# Clear CONFIG_LOCALVERSION so it doesn't append anything extra
 sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' .config 2>/dev/null || true
 
-# Verify
-echo "  Source Makefile version:"
+# Verify Makefile
+echo "  Source Makefile version fields:"
 grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile | head -4 | sed 's/^/    /'
-echo "  localversion file: $(cat ${KERNEL_SRC}/localversion)"
 
 make olddefconfig
 
@@ -147,17 +144,11 @@ fi
 # preprocessor guards that trigger -Werror=undef with mismatched configs
 make KCFLAGS="-Wno-error=undef" modules_prepare
 
-# ── Force-write the correct version into generated headers ─────────────────
-# The kernel build system's version logic is fragile with out-of-tree source.
-# Rather than fighting with localversion, setlocalversion, CONFIG_LOCALVERSION_AUTO,
-# dirty-tree detection, etc., just overwrite the generated files directly.
-# This is the definitive fix — the module will have exactly the right vermagic.
-echo "  Force-writing UTS_RELEASE = \"${KERNEL_VERSION}\""
-mkdir -p include/generated include/config
-echo "#define UTS_RELEASE \"${KERNEL_VERSION}\"" > include/generated/utsrelease.h
-echo "${KERNEL_VERSION}" > include/config/kernel.release
-
-# Verify the version string
+# ── Verify and force-correct the version string ───────────────────────────
+# The EXTRAVERSION approach above should produce the right version. Verify it,
+# and force-write as a safety net. Note: the XDNA build's `make M=... modules`
+# will regenerate utsrelease.h from the Makefile, so EXTRAVERSION must be
+# correct (the force-write here is just for verification/modules_prepare output).
 BUILT_UTS=$(cat include/generated/utsrelease.h 2>/dev/null | grep UTS_RELEASE | sed 's/.*"\(.*\)".*/\1/' || echo "unknown")
 echo ""
 echo "  Built UTS_RELEASE: ${BUILT_UTS}"
@@ -165,7 +156,12 @@ echo "  Running kernel:    ${KERNEL_VERSION}"
 if [ "${BUILT_UTS}" = "${KERNEL_VERSION}" ]; then
     echo "  VERSION MATCH: YES"
 else
-    echo "  WARNING: Version mismatch! Module may need insmod -f"
+    echo "  WARNING: modules_prepare produced '${BUILT_UTS}' instead of '${KERNEL_VERSION}'"
+    echo "  Force-writing correct UTS_RELEASE..."
+    mkdir -p include/generated include/config
+    echo "#define UTS_RELEASE \"${KERNEL_VERSION}\"" > include/generated/utsrelease.h
+    echo "${KERNEL_VERSION}" > include/config/kernel.release
+    echo "  (Note: XDNA build may regenerate this — check EXTRAVERSION in Makefile if vermagic is still wrong)"
 fi
 
 # ── Module.symvers — required for out-of-tree module builds ────────────────

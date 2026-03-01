@@ -85,6 +85,22 @@ if [ -d /build/xdna-driver/src/vxdna ]; then
     sed -i '/add_subdirectory.*vxdna/d' /build/xdna-driver/src/CMakeLists.txt 2>/dev/null || true
 fi
 
+# Remove the shim virtio/host platform code — these need drm/drm.h and
+# drm/virtgpu_drm.h kernel UAPI headers. We only need the kernel module
+# (amdxdna.ko), not the userspace shim library.
+if [ -d /build/xdna-driver/src/shim/virtio ]; then
+    echo "Removing src/shim/virtio/ (needs virtgpu UAPI headers, not needed)..."
+    rm -rf /build/xdna-driver/src/shim/virtio
+fi
+if [ -f /build/xdna-driver/src/shim/host/platform_host.cpp ]; then
+    echo "Removing src/shim/host/platform_host.cpp (needs drm/drm.h, not needed)..."
+    rm -f /build/xdna-driver/src/shim/host/platform_host.cpp
+fi
+# Remove CMake references to virtio/host platform sources
+for cmake_file in $(find /build/xdna-driver/src/shim -name 'CMakeLists.txt' 2>/dev/null); do
+    sed -i '/virtio/d; /platform_host/d' "${cmake_file}" 2>/dev/null || true
+done
+
 # If Module.symvers is empty/small, modpost can't resolve kernel symbols.
 # KBUILD_MODPOST_WARN turns those errors into warnings so the build succeeds.
 # The symbols DO exist in the running kernel — they just can't be CRC-verified
