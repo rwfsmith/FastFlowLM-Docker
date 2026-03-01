@@ -136,9 +136,26 @@ echo "  localversion file: $(cat ${KERNEL_SRC}/localversion)"
 
 make olddefconfig
 
+# Verify CONFIG_LOCALVERSION_AUTO is actually off after olddefconfig
+# (olddefconfig may re-enable it since it defaults to y)
+if grep -q "^CONFIG_LOCALVERSION_AUTO=y" .config 2>/dev/null; then
+    echo "  WARNING: olddefconfig re-enabled CONFIG_LOCALVERSION_AUTO — forcing off again"
+    sed -i 's/^CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' .config
+fi
+
 # Build with relaxed warnings — TrueNAS kernel source may have custom
 # preprocessor guards that trigger -Werror=undef with mismatched configs
 make KCFLAGS="-Wno-error=undef" modules_prepare
+
+# ── Force-write the correct version into generated headers ─────────────────
+# The kernel build system's version logic is fragile with out-of-tree source.
+# Rather than fighting with localversion, setlocalversion, CONFIG_LOCALVERSION_AUTO,
+# dirty-tree detection, etc., just overwrite the generated files directly.
+# This is the definitive fix — the module will have exactly the right vermagic.
+echo "  Force-writing UTS_RELEASE = \"${KERNEL_VERSION}\""
+mkdir -p include/generated include/config
+echo "#define UTS_RELEASE \"${KERNEL_VERSION}\"" > include/generated/utsrelease.h
+echo "${KERNEL_VERSION}" > include/config/kernel.release
 
 # Verify the version string
 BUILT_UTS=$(cat include/generated/utsrelease.h 2>/dev/null | grep UTS_RELEASE | sed 's/.*"\(.*\)".*/\1/' || echo "unknown")
