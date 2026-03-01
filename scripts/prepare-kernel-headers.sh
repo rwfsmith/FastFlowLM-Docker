@@ -111,10 +111,17 @@ echo "${RUNNING_LOCALVER}" > "${KERNEL_SRC}/localversion"
 # and appends "+" to the version string. We must prevent this entirely:
 #   1. Remove .git so setlocalversion can't detect git at all
 #   2. Create empty .scmversion as a secondary guard
-#   3. Disable CONFIG_LOCALVERSION_AUTO in .config
+#   3. Replace scripts/setlocalversion with a no-op (nuclear option)
+#   4. Disable CONFIG_LOCALVERSION_AUTO in .config
 rm -rf "${KERNEL_SRC}/.git"
 echo "  Removed .git directory (prevents dirty-tree '+' suffix)"
 touch "${KERNEL_SRC}/.scmversion"
+# Replace setlocalversion with a script that outputs nothing.
+# This is the definitive fix — no matter what heuristics the real script
+# uses (git, file timestamps, hg, svn, etc.), our version outputs "".
+printf '#!/bin/sh\ntrue\n' > "${KERNEL_SRC}/scripts/setlocalversion"
+chmod +x "${KERNEL_SRC}/scripts/setlocalversion"
+echo "  Replaced scripts/setlocalversion with no-op"
 # Disable CONFIG_LOCALVERSION_AUTO — force it off regardless of whether
 # the line already exists (make olddefconfig defaults it to y)
 sed -i '/CONFIG_LOCALVERSION_AUTO/d' .config 2>/dev/null || true
