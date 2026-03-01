@@ -43,7 +43,7 @@ REAL_HOME=$(eval echo "~${REAL_USER}")
 
 echo ""
 echo "  ███████╗ █████╗ ███████╗████████╗███████╗██╗      ██████╗ ██╗    ██╗"
-echo "  ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝██║     ██╔═══██╗██║    ██║"
+echo "  ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝██║     ██╔═══██╗██║    █
 echo "  █████╗  ███████║███████╗   ██║   █████╗  ██║     ██║   ██║██║ █╗ ██║"
 echo "  ██╔══╝  ██╔══██║╚════██║   ██║   ██╔══╝  ██║     ██║   ██║██║███╗██║"
 echo "  ██║     ██║  ██║███████║   ██║   ██║     ███████╗╚██████╔╝╚███╔███╔╝"
@@ -86,6 +86,29 @@ if [ ! -d "/lib/modules/${KERNEL_VERSION}/build" ]; then
     apt-get install -y "linux-headers-${KERNEL_VERSION}"
 fi
 log "Kernel headers: /lib/modules/${KERNEL_VERSION}/build"
+
+# Check CONFIG_DRM_ACCEL — required for /dev/accel/ to exist
+DRM_ACCEL_FOUND=false
+if [ -f /proc/config.gz ]; then
+    if zcat /proc/config.gz 2>/dev/null | grep -q "CONFIG_DRM_ACCEL=[ym]"; then
+        DRM_ACCEL_FOUND=true
+    fi
+elif [ -f "/boot/config-${KERNEL_VERSION}" ]; then
+    if grep -q "CONFIG_DRM_ACCEL=[ym]" "/boot/config-${KERNEL_VERSION}"; then
+        DRM_ACCEL_FOUND=true
+    fi
+fi
+
+if [ "$DRM_ACCEL_FOUND" = true ]; then
+    log "CONFIG_DRM_ACCEL enabled in kernel config."
+else
+    err "CONFIG_DRM_ACCEL is not enabled in the kernel."
+    echo "  /dev/accel/ cannot exist without this kernel option."
+    echo "  Install a kernel with DRM_ACCEL support:"
+    echo "    sudo apt install linux-generic-hwe-24.04"
+    echo "    sudo reboot"
+    exit 1
+fi
 
 # ── Step 2: Install system dependencies ────────────────────────────────────
 step "Step 2/6: Installing system dependencies"
@@ -181,14 +204,35 @@ if [ -c /dev/accel/accel0 ] 2>/dev/null && [ "$DRIVER_INSTALLED" = true ]; then
     log "XDNA driver already installed and loaded (/dev/accel/accel0 exists). Skipping build."
 else
     if [ "$DRIVER_INSTALLED" = true ]; then
-        log "XDNA driver packages installed but device not active. Trying modprobe..."
-        modprobe amdxdna 2>/dev/null || true
-        sleep 2
+        log "XDNA driver packages installed but device not active. Loading modules..."
+
+        # Ensure prerequisite DRM/accel subsystem modules are loaded
+        modprobe drm 2>/dev/null || true
+        modprobe accel 2>/dev/null || true
+
+        # Rebuild module dependency list in case it's stale
+        depmod -a
+
+        # Load amdxdna and show errors instead of hiding them
+        if ! modprobe amdxdna; then
+            warn "modprobe amdxdna failed. Check 'dmesg | tail -30' for details."
+        fi
+
+        # Trigger udev to create device nodes
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --subsystem-match=accel 2>/dev/null || true
+        sleep 3
+
         if [ -c /dev/accel/accel0 ] 2>/dev/null; then
             log "XDNA driver loaded successfully!"
             ls -la /dev/accel/
         else
-            warn "modprobe didn't create /dev/accel/accel0. May need rebuild or reboot."
+            warn "modprobe didn't create /dev/accel/accel0."
+            echo "  Diagnostics:"
+            echo "  - dmesg | grep -i 'xdna\|accel\|drm' | tail -20"
+            echo "  - lsmod | grep amdxdna"
+            echo "  - ls -la /dev/accel/ 2>/dev/null"
+            echo "  A reboot may be required after first install."
         fi
     else
         # Full build needed
@@ -215,19 +259,42 @@ else
         dpkg -i ./Release/xrt_*-amd64-base.deb 2>/dev/null || apt-get install -f -y
         dpkg -i ./Release/xrt_plugin*-amdxdna.deb 2>/dev/null || apt-get install -f -y
 
-        # Load the module
-        modprobe amdxdna 2>/dev/null || true
+        # Rebuild module dependency list so modprobe can find the new module
+        depmod -a
+        log "Module dependencies rebuilt."
 
-        # Wait for device to appear
-        sleep 2
+        # Ensure prerequisite DRM/accel subsystem modules are loaded
+        modprobe drm 2>/dev/null || true
+        modprobe accel 2>/dev/null || true
+
+        # Load the amdxdna module (show errors)
+        if ! modprobe amdxdna; then
+            warn "modprobe amdxdna failed. Check 'dmesg | tail -30' for details."
+        fi
+
+        # Trigger udev to create device nodes
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --subsystem-match=accel 2>/dev/null || true
+
+        # Wait for device to appear (up to 10 seconds)
+        echo "Waiting for /dev/accel/accel0 to appear..."
+        for i in $(seq 1 10); do
+            if [ -c /dev/accel/accel0 ] 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
 
         if [ -c /dev/accel/accel0 ] 2>/dev/null; then
             log "XDNA driver loaded successfully!"
             ls -la /dev/accel/
         else
             warn "Driver installed but /dev/accel/accel0 not found."
-            echo "  Check: dmesg | grep -i xdna"
-            echo "  You may need to reboot the VM."
+            echo "  Diagnostics:"
+            echo "  - dmesg | grep -i 'xdna\|accel\|drm' | tail -20"
+            echo "  - lsmod | grep amdxdna"
+            echo "  - ls -la /dev/accel/ 2>/dev/null"
+            echo "  A reboot is likely required after first install."
         fi
 
         # Clean up build directory
