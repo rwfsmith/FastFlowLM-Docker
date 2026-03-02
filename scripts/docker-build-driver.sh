@@ -324,30 +324,26 @@ for DEP_MOD in drm drm_kms_helper drm_shmem_helper accel; do
 done
 
 # ── Load the module ───────────────────────────────────────────────────────
-# The module is built without CONFIG_MODVERSIONS (to avoid "Invalid relocation
-# target" errors). This means the vermagic won't include "modversions", so
-# it won't match the running kernel's vermagic exactly.
-# insmod -f sets MODULE_INIT_IGNORE_MODVERSIONS | MODULE_INIT_IGNORE_VERMAGIC,
-# bypassing this check. This is safe — the symbols DO exist in the running
-# kernel; the only difference is the modversions flag in vermagic.
+# If built with valid Module.symvers + CONFIG_MODVERSIONS=y, the module has
+# correct CRCs and matching vermagic — regular insmod should work.
+# If not, fall back to insmod -f (bypass vermagic + modversions checks).
 echo "Loading amdxdna module..."
 
-# Try regular insmod first (works if vermagic matches exactly)
 if insmod "${MODULE}" 2>/dev/null; then
     echo "  Module loaded successfully."
 else
-    echo "  Regular insmod failed (expected — vermagic differs on modversions flag)."
-    echo "  Loading with insmod -f (bypass vermagic check)..."
+    echo "  Regular insmod failed. Trying insmod -f..."
     if insmod -f "${MODULE}" 2>&1; then
         echo "  Module loaded with force flag."
-        echo "  (Kernel will show 'module verification failed' — this is normal)"
+        echo "  (Kernel may show 'module verification failed' — this is normal)"
     else
         echo ""
-        echo "ERROR: Could not load amdxdna.ko even with -f flag."
+        echo "ERROR: Could not load amdxdna.ko."
         echo ""
         echo "Check 'dmesg | tail -50' for details. Common issues:"
         echo "  - 'version magic' mismatch: kernel version changed since build"
-        echo "  - 'Unknown symbol (err -22)': missing namespace import or module dependency"
+        echo "  - 'Invalid relocation target': rebuild with Module.symvers"
+        echo "  - 'Unknown symbol (err -22)': missing module dependency"
         echo "  - 'firmware not found': run this script again to set up firmware overlay"
         echo ""
         echo "Re-run the full driver build if kernel was updated:"

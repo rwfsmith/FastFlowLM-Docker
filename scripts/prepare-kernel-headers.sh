@@ -56,24 +56,34 @@ if ! grep -q "^CONFIG_DRM_ACCEL=y" .config 2>/dev/null; then
     echo "  Added CONFIG_DRM_ACCEL=y"
 fi
 
-# Disable CONFIG_MODVERSIONS — we MUST build without it.
-# The running kernel has modversions enabled, but we don't have Module.symvers
-# so the build generates CRC stubs. When these get partially linked (ld -r),
-# the CRC relocations get pre-resolved, leaving non-zero values at relocation
-# targets. Kernel 6.12+ rejects this with:
-#   "Invalid relocation target, existing value is nonzero for type 1"
+# ── CONFIG_MODVERSIONS handling ────────────────────────────────────────────
+# The running kernel has CONFIG_MODVERSIONS=y, so its vermagic includes
+# "modversions". Our module's vermagic MUST match for insmod to accept it.
 #
-# Building without modversions means no CRC symbols, no bad relocations.
-# The vermagic won't include "modversions" but insmod -f bypasses BOTH
-# vermagic and modversions checks, so this is fine.
-sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' .config 2>/dev/null || true
-sed -i '/^# CONFIG_MODVERSIONS is not set$/!{/CONFIG_MODVERSIONS/d}' .config 2>/dev/null || true
-if ! grep -q 'CONFIG_MODVERSIONS' .config 2>/dev/null; then
-    echo '# CONFIG_MODVERSIONS is not set' >> .config
+# With valid Module.symvers (extracted from /proc/kallsyms): Enable modversions
+# so CRCs are correct and vermagic matches. Module loads with regular insmod.
+#
+# Without Module.symvers: We'd have to disable modversions (wrong vermagic)
+# and use insmod -f. But kernel 6.12+ also has an unconditional relocation
+# check that -f can't bypass. So we MUST have Module.symvers.
+if [ -f /host-config/Module.symvers ]; then
+    echo "  Found Module.symvers from host — enabling CONFIG_MODVERSIONS=y"
+    # Ensure CONFIG_MODVERSIONS is enabled
+    sed -i 's/^# CONFIG_MODVERSIONS is not set/CONFIG_MODVERSIONS=y/' .config 2>/dev/null || true
+    if ! grep -q '^CONFIG_MODVERSIONS=y' .config 2>/dev/null; then
+        echo 'CONFIG_MODVERSIONS=y' >> .config
+    fi
+else
+    echo "  WARNING: No Module.symvers — disabling CONFIG_MODVERSIONS"
+    echo "  Module will need insmod -f (may fail on kernel 6.12+ due to relocation checks)"
+    sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' .config 2>/dev/null || true
+    sed -i '/^# CONFIG_MODVERSIONS is not set$/!{/CONFIG_MODVERSIONS/d}' .config 2>/dev/null || true
+    if ! grep -q 'CONFIG_MODVERSIONS' .config 2>/dev/null; then
+        echo '# CONFIG_MODVERSIONS is not set' >> .config
+    fi
+    # Also disable ASM_MODVERSIONS which depends on MODVERSIONS
+    sed -i 's/^CONFIG_ASM_MODVERSIONS=y/# CONFIG_ASM_MODVERSIONS is not set/' .config 2>/dev/null || true
 fi
-# Also disable ASM_MODVERSIONS which depends on MODVERSIONS
-sed -i 's/^CONFIG_ASM_MODVERSIONS=y/# CONFIG_ASM_MODVERSIONS is not set/' .config 2>/dev/null || true
-echo "  CONFIG_MODVERSIONS=n (avoids invalid relocations without Module.symvers)"
 
 # ── Prepare the source tree for external module builds ─────────────────────
 echo ""
@@ -196,12 +206,19 @@ for SYMPATH in \
     fi
 done
 
+# Also check for Module.symvers passed in via /host-config/
+if [ "$SYMVERS_FOUND" = false ] && [ -f /host-config/Module.symvers ]; then
+    echo "Found Module.symvers from /host-config/ (extracted from /proc/kallsyms)"
+    cp /host-config/Module.symvers "${KERNEL_SRC}/Module.symvers"
+    SYMVERS_FOUND=true
+fi
+
 if [ "$SYMVERS_FOUND" = false ]; then
     echo ""
-    echo "=== Module.symvers not found on host ==="
+    echo "=== Module.symvers not found ==="
     echo "Creating empty Module.symvers."
     echo "The XDNA build will use KBUILD_MODPOST_WARN=1 to proceed without it."
-    echo "The resulting module will load fine via insmod — the symbols exist in the running kernel."
+    echo "WARNING: Without Module.symvers, the module may fail to load on kernel 6.12+."
     echo ""
     touch "${KERNEL_SRC}/Module.symvers"
 fi

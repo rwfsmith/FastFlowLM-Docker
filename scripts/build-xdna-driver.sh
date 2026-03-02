@@ -112,6 +112,44 @@ if [ -n "${KERNEL_CONFIG_FILE}" ] && [ -f "${KERNEL_CONFIG_FILE}" ]; then
     fi
 fi
 
+# ── Extract Module.symvers from running kernel ────────────────────────────
+# TrueNAS doesn't ship Module.symvers in /lib/modules. Without it, the build
+# can't verify CRC checksums for kernel symbols, and CONFIG_MODVERSIONS
+# generates invalid CRC stubs that cause relocation errors.
+#
+# Solution: extract CRC values from /proc/kallsyms. Each exported kernel
+# symbol has a corresponding __crc_<name> absolute symbol whose "address"
+# is actually the CRC value. We can reconstruct Module.symvers from these.
+MODULE_SYMVERS_FILE="${OUTPUT_DIR}/Module.symvers"
+if [ -f "/lib/modules/${KERNEL_VERSION}/build/Module.symvers" ]; then
+    echo "Found Module.symvers in /lib/modules — copying..."
+    cp "/lib/modules/${KERNEL_VERSION}/build/Module.symvers" "${MODULE_SYMVERS_FILE}"
+elif [ -f "/lib/modules/${KERNEL_VERSION}/Module.symvers" ]; then
+    echo "Found Module.symvers in /lib/modules — copying..."
+    cp "/lib/modules/${KERNEL_VERSION}/Module.symvers" "${MODULE_SYMVERS_FILE}"
+else
+    echo "Extracting Module.symvers from /proc/kallsyms..."
+    # __crc_ symbols are absolute (type A) with CRC as the address value
+    # Format: 0xCRC \t symbol_name \t vmlinux \t EXPORT_SYMBOL
+    if grep -q '__crc_' /proc/kallsyms 2>/dev/null; then
+        grep '__crc_' /proc/kallsyms | awk '{
+            crc = $1
+            # Strip __crc_ prefix to get the symbol name
+            name = substr($3, 7)
+            # Module name is always vmlinux for kernel symbols
+            # (module symbols also appear but we capture those too)
+            printf "0x%s\t%s\tvmlinux\tEXPORT_SYMBOL\n", crc, name
+        }' > "${MODULE_SYMVERS_FILE}"
+        SYMCOUNT=$(wc -l < "${MODULE_SYMVERS_FILE}")
+        echo "  Extracted ${SYMCOUNT} symbol CRCs from /proc/kallsyms"
+    else
+        echo -e "${YELLOW}WARNING: No __crc_ symbols found in /proc/kallsyms.${NC}"
+        echo "  The build will proceed without Module.symvers."
+        echo "  Module may need insmod -f to load."
+        MODULE_SYMVERS_FILE=""
+    fi
+fi
+
 echo ""
 
 # ── Build the Docker image ────────────────────────────────────────────────
@@ -141,8 +179,15 @@ if [ -n "${KERNEL_CONFIG_FILE}" ] && [ -f "${KERNEL_CONFIG_FILE}" ]; then
     CONFIG_MOUNT="-v ${KERNEL_CONFIG_FILE}:/host-config/kernel.config:ro"
 fi
 
+# Mount Module.symvers if we extracted it
+SYMVERS_MOUNT=""
+if [ -n "${MODULE_SYMVERS_FILE}" ] && [ -f "${MODULE_SYMVERS_FILE}" ]; then
+    SYMVERS_MOUNT="-v ${MODULE_SYMVERS_FILE}:/host-config/Module.symvers:ro"
+fi
+
 docker run --rm \
     ${CONFIG_MOUNT} \
+    ${SYMVERS_MOUNT} \
     -v /lib/modules:/host-modules:ro \
     -v "${OUTPUT_DIR}:/output" \
     -e "KERNEL_VERSION=${KERNEL_VERSION}" \
