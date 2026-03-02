@@ -61,10 +61,20 @@ def fix_relocations(filepath):
         if sh_type != SHT_RELA:
             continue
 
-        # Parse RELA section header
+        # Parse RELA section header (ELF64 Shdr offsets)
+        # sh_name:      +0  (4 bytes)
+        # sh_type:      +4  (4 bytes)
+        # sh_flags:     +8  (8 bytes)
+        # sh_addr:      +16 (8 bytes)
+        # sh_offset:    +24 (8 bytes)
+        # sh_size:      +32 (8 bytes)
+        # sh_link:      +40 (4 bytes)
+        # sh_info:      +44 (4 bytes)  <-- index of target section
+        # sh_addralign: +48 (8 bytes)
+        # sh_entsize:   +56 (8 bytes)
         rela_offset = struct.unpack_from('<Q', data, sh_base + 24)[0]    # sh_offset
         rela_size = struct.unpack_from('<Q', data, sh_base + 32)[0]      # sh_size
-        rela_info = struct.unpack_from('<I', data, sh_base + 28)[0]      # sh_info (target section)
+        rela_info = struct.unpack_from('<I', data, sh_base + 44)[0]      # sh_info (target section index)
         rela_entsize = struct.unpack_from('<Q', data, sh_base + 56)[0]   # sh_entsize
 
         if rela_entsize == 0:
