@@ -114,40 +114,60 @@ fi
 
 # ── Extract Module.symvers from running kernel ────────────────────────────
 # TrueNAS doesn't ship Module.symvers in /lib/modules. Without it, the build
-# can't verify CRC checksums for kernel symbols, and CONFIG_MODVERSIONS
-# generates invalid CRC stubs that cause relocation errors.
+# can't produce valid CRC checksums, and CONFIG_MODVERSIONS generates stubs
+# that cause "Invalid relocation target" errors on kernel 6.12+.
 #
-# Solution: extract CRC values from /proc/kallsyms. Each exported kernel
-# symbol has a corresponding __crc_<name> absolute symbol whose "address"
-# is actually the CRC value. We can reconstruct Module.symvers from these.
+# Strategy (in priority order):
+#   1. Use pre-built Module.symvers from /lib/modules (standard distros)
+#   2. Use symvers.gz from /lib/modules (some distros)
+#   3. Extract CRCs from installed .ko files via modprobe --dump-modversions
+#      Each .ko contains the CRCs of symbols it IMPORTS. Since all modules
+#      were built against the same kernel, these CRCs match the kernel's
+#      export CRCs. Collecting from ALL modules covers vmlinux + module symbols.
 MODULE_SYMVERS_FILE="${OUTPUT_DIR}/Module.symvers"
 if [ -f "/lib/modules/${KERNEL_VERSION}/build/Module.symvers" ]; then
-    echo "Found Module.symvers in /lib/modules — copying..."
+    echo "Found Module.symvers in /lib/modules/*/build/ — copying..."
     cp "/lib/modules/${KERNEL_VERSION}/build/Module.symvers" "${MODULE_SYMVERS_FILE}"
 elif [ -f "/lib/modules/${KERNEL_VERSION}/Module.symvers" ]; then
-    echo "Found Module.symvers in /lib/modules — copying..."
+    echo "Found Module.symvers in /lib/modules/ — copying..."
     cp "/lib/modules/${KERNEL_VERSION}/Module.symvers" "${MODULE_SYMVERS_FILE}"
+elif [ -f "/lib/modules/${KERNEL_VERSION}/symvers.gz" ]; then
+    echo "Found symvers.gz in /lib/modules/ — extracting..."
+    zcat "/lib/modules/${KERNEL_VERSION}/symvers.gz" > "${MODULE_SYMVERS_FILE}"
 else
-    echo "Extracting Module.symvers from /proc/kallsyms..."
-    # __crc_ symbols are absolute (type A) with CRC as the address value
-    # Format: 0xCRC \t symbol_name \t vmlinux \t EXPORT_SYMBOL
-    if grep -q '__crc_' /proc/kallsyms 2>/dev/null; then
-        grep '__crc_' /proc/kallsyms | awk '{
-            crc = $1
-            # Strip __crc_ prefix to get the symbol name
-            name = substr($3, 7)
-            # Module name is always vmlinux for kernel symbols
-            # (module symbols also appear but we capture those too)
-            printf "0x%s\t%s\tvmlinux\tEXPORT_SYMBOL\n", crc, name
-        }' > "${MODULE_SYMVERS_FILE}"
+    echo "Extracting Module.symvers from installed kernel modules..."
+    echo "  (This reads CRCs from every .ko file — may take a minute)"
+    # modprobe --dump-modversions outputs: 0xCRC\tsymbol_name
+    # Convert to Module.symvers format: 0xCRC\tsymbol\tmodule\tEXPORT_TYPE
+    # The module field doesn't matter for modpost CRC validation.
+    > "${MODULE_SYMVERS_FILE}"  # truncate
+    FOUND_MODULES=0
+    for ko in $(find "/lib/modules/${KERNEL_VERSION}/kernel" \
+                     -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.zst' -o -name '*.ko.gz' \
+                     2>/dev/null); do
+        modprobe --dump-modversions "$ko" 2>/dev/null | while IFS=$'\t' read -r crc sym; do
+            # Clean whitespace from sym
+            sym=$(echo "$sym" | tr -d ' \t')
+            [ -n "$sym" ] && printf "%s\t%s\tvmlinux\tEXPORT_SYMBOL\n" "$crc" "$sym"
+        done >> "${MODULE_SYMVERS_FILE}"
+        FOUND_MODULES=$((FOUND_MODULES + 1))
+    done
+    # Remove duplicate symbol entries (keep first occurrence)
+    if [ -s "${MODULE_SYMVERS_FILE}" ]; then
+        sort -u -k2,2 "${MODULE_SYMVERS_FILE}" -o "${MODULE_SYMVERS_FILE}"
         SYMCOUNT=$(wc -l < "${MODULE_SYMVERS_FILE}")
-        echo "  Extracted ${SYMCOUNT} symbol CRCs from /proc/kallsyms"
+        echo "  Extracted ${SYMCOUNT} unique symbol CRCs from ${FOUND_MODULES} modules"
     else
-        echo -e "${YELLOW}WARNING: No __crc_ symbols found in /proc/kallsyms.${NC}"
+        echo -e "${YELLOW}WARNING: Could not extract any CRCs from kernel modules.${NC}"
         echo "  The build will proceed without Module.symvers."
-        echo "  Module may need insmod -f to load."
+        echo "  Module loading may fail on kernel 6.12+ due to relocation checks."
         MODULE_SYMVERS_FILE=""
     fi
+fi
+
+if [ -n "${MODULE_SYMVERS_FILE}" ] && [ -f "${MODULE_SYMVERS_FILE}" ]; then
+    SYMCOUNT=$(wc -l < "${MODULE_SYMVERS_FILE}")
+    echo "Module.symvers: ${SYMCOUNT} symbols"
 fi
 
 echo ""
