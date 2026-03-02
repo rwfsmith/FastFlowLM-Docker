@@ -166,14 +166,29 @@ if [ -n "${AMDXDNA_KO}" ]; then
     cp "${AMDXDNA_KO}" "${OUTPUT_DIR}/modules/"
     echo "Module: ${OUTPUT_DIR}/modules/$(basename ${AMDXDNA_KO})"
 
-    # ── Fix pre-resolved relocation targets (kernel 6.12+ hardening) ──────
-    # Kernel 6.12 added apply_relocate_add() checks that reject modules with
-    # non-zero values at R_X86_64_64 relocation targets. The linker's 'ld -r'
-    # (partial linking) can resolve cross-object references and write addresses
-    # to these locations. For RELA relocations, the target should be zero —
-    # the addend is in the relocation entry. Zero the targets to fix this.
+    # ── Strip debug sections (kernel 6.12+ relocation hardening fix) ─────
+    # Kernel 6.12 added a check in apply_relocate_add() that rejects modules
+    # with non-zero values at R_X86_64_64 relocation targets. However, the
+    # check has a bug in early 6.12.x builds: it processes RELA sections for
+    # ALL sections, including non-ALLOC ones like .debug_info. Non-ALLOC
+    # sections aren't loaded into module memory, so the kernel computes an
+    # invalid 'loc' pointer from an uninitialized sh_addr and reads garbage
+    # memory — then rejects the module because the garbage is non-zero.
+    #
+    # Fix: strip all debug sections (and any other non-essential sections).
+    # This removes .debug_* and their .rela.debug_* sections so the buggy
+    # kernel code never encounters them.
     if [ -f "${OUTPUT_DIR}/modules/amdxdna.ko" ]; then
-        echo "Fixing relocation targets for kernel 6.12+ compatibility..."
+        echo "Stripping debug sections (kernel 6.12+ relocation bug workaround)..."
+        BEFORE_SIZE=$(stat -c%s "${OUTPUT_DIR}/modules/amdxdna.ko")
+        strip --strip-debug "${OUTPUT_DIR}/modules/amdxdna.ko"
+        AFTER_SIZE=$(stat -c%s "${OUTPUT_DIR}/modules/amdxdna.ko")
+        echo "  Stripped: ${BEFORE_SIZE} -> ${AFTER_SIZE} bytes"
+    fi
+
+    # Also zero any remaining non-zero relocation targets as a safety net
+    if [ -f "${OUTPUT_DIR}/modules/amdxdna.ko" ]; then
+        echo "Checking relocation targets..."
         python3 /build/fix-module-relocations.py "${OUTPUT_DIR}/modules/amdxdna.ko"
     fi
 
