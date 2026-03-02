@@ -135,6 +135,19 @@ if [ "${KMAJOR}" -eq 6 ] && [ "${KMINOR}" -lt 13 ]; then
     done
 fi
 
+# ── Fix SR-IOV calls when CONFIG_PCI_IOV is not enabled ───────────────────
+# TrueNAS kernel may not have CONFIG_PCI_IOV, which causes
+# pci_sriov_configure_simple to be #defined to NULL. The XDNA driver's
+# aie4_sriov.c calls it as a function, causing build failure.
+# Wrap the calls with #ifdef CONFIG_PCI_IOV guards.
+SRIOV_FILE=$(find /build/xdna-driver -path '*/driver/amdxdna/aie4_sriov.c' 2>/dev/null | head -1)
+if [ -n "${SRIOV_FILE}" ] && ! grep -q 'CONFIG_PCI_IOV' "${SRIOV_FILE}" 2>/dev/null; then
+    echo "Patching aie4_sriov.c for kernels without CONFIG_PCI_IOV..."
+    sed -i 's/ret = pci_sriov_configure_simple(pdev, 0);/#ifdef CONFIG_PCI_IOV\n\tret = pci_sriov_configure_simple(pdev, 0);\n#else\n\tret = 0;\n#endif/' "${SRIOV_FILE}"
+    sed -i 's/return pci_sriov_configure_simple(pdev, ndev->num_vfs);/#ifdef CONFIG_PCI_IOV\n\treturn pci_sriov_configure_simple(pdev, ndev->num_vfs);\n#else\n\treturn -ENODEV;\n#endif/' "${SRIOV_FILE}"
+    echo "  Patched: ${SRIOV_FILE}"
+fi
+
 cd build
 ./build.sh -release || {
     echo ""
